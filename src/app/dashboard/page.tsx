@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { log } from "@/lib/logger";
 
@@ -30,7 +31,7 @@ export default function DashboardPage() {
       <h1 className="text-2xl font-semibold">Dashboard</h1>
       <p>Signed in as {email}</p>
       <div className="space-x-2">
-        <a className="underline" href="/">Home</a>
+        <Link className="underline" href="/">Home</Link>
         <button
           className="border rounded px-3 py-1"
           onClick={async () => {

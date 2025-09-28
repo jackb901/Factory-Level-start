@@ -23,7 +23,7 @@ export function log(event: string, data: Record<string, unknown> = {}, level: Le
   try {
     // Do not log secrets; callers must redact before passing.
     console.log(JSON.stringify(payload));
-  } catch (e) {
+  } catch {
     console.log(
       JSON.stringify({ timestamp: new Date().toISOString(), level: 'error', event: 'logger_failed' })
     );
