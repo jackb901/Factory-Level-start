@@ -32,6 +32,7 @@ export default function DashboardPage() {
       <p>Signed in as {email}</p>
       <div className="space-x-2">
         <Link className="underline" href="/">Home</Link>
+        <Link className="underline" href="/jobs">Jobs</Link>
         <button
           className="border rounded px-3 py-1"
           onClick={async () => {
