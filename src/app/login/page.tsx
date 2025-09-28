@@ -18,7 +18,13 @@ export default function LoginPage() {
     setLoading(true);
     setError(null);
     const redirectTo = `${process.env.NEXT_PUBLIC_APP_URL || window.location.origin}/auth/callback`;
-    const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo } });
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo,
+        queryParams: { prompt: "select_account" }
+      }
+    });
     if (error) setError(error.message);
     setLoading(false);
   };
