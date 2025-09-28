@@ -17,7 +17,7 @@ export default function DashboardPage() {
         window.location.href = "/login";
         return;
       }
-      setEmail(data.user.email);
+      setEmail(data.user.email ?? null);
       setLoading(false);
       log("dashboard_loaded", { duration_ms: performance.now() - started });
     })();
