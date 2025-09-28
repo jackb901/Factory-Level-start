@@ -5,7 +5,6 @@ import { log } from "@/lib/logger";
 export default function DashboardError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   useEffect(() => {
     log("dashboard_error", { message: error.message, digest: error.digest }, "error");
-    // eslint-disable-next-line no-console
     console.error(error);
   }, [error]);
 

@@ -13,7 +13,7 @@ export default function AuthCallbackPage() {
         const url = new URL(window.location.href);
         const code = url.searchParams.get("code");
         if (code) {
-          const { error } = await supabase.auth.exchangeCodeForSession({ code });
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
           if (error) throw error;
         }
         const { data } = await supabase.auth.getSession();
