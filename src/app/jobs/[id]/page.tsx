@@ -129,10 +129,10 @@ export default function JobDetailPage() {
 
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Bids</h2>
-        <select className="border rounded px-3 py-2" value={selectedBidId || ""} onChange={(e) => setSelectedBidId(e.target.value || null)}>
+        <select className="border rounded px-3 py-2 bg-white text-black" value={selectedBidId || ""} onChange={(e) => setSelectedBidId(e.target.value || null)}>
           <option value="">Select a bid…</option>
           {bids.map(b => (
-            <option key={b.id} value={b.id}>{new Date(b.created_at).toLocaleString()} — {contractorLabel(b)}</option>
+            <option className="text-black" key={b.id} value={b.id}>{new Date(b.created_at).toLocaleString()} — {contractorLabel(b)}</option>
           ))}
         </select>
       </section>
