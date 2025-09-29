@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { log } from "@/lib/logger";
+import Link from "next/link";
 
 type Job = { id: string; name: string; created_at: string };
 
@@ -74,6 +75,9 @@ export default function JobsPage() {
           <li key={j.id} className="border p-3 rounded">
             <div className="font-medium">{j.name}</div>
             <div className="text-xs text-gray-500">{new Date(j.created_at).toLocaleString()}</div>
+            <div className="mt-2">
+              <Link className="underline" href={`/jobs/${j.id}`}>Open</Link>
+            </div>
           </li>
         ))}
       </ul>
