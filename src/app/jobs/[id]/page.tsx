@@ -62,13 +62,14 @@ export default function JobDetailPage() {
     if (!userData.user) { window.location.href = "/login"; return; }
     let contractorId: string | null = null;
     if (newContractorName.trim()) {
-      const { data: cons, error } = await supabase.from("contractors").insert({
-        job_id: id,
-        user_id: userData.user.id,
-        name: newContractorName.trim()
-      }).select().single();
+      const { data: cons, error } = await supabase
+        .from("contractors")
+        .insert({ job_id: id, user_id: userData.user.id, name: newContractorName.trim() })
+        .select("id,name")
+        .single();
       if (error) { setError(error.message); setCreating(false); return; }
       contractorId = (cons as Contractor).id;
+      setContractors((prev) => ({ ...(prev || {}), [(cons as Contractor).id]: cons as Contractor }));
     }
     const { data: bid, error: bidErr } = await supabase.from("bids").insert({
       job_id: id,
