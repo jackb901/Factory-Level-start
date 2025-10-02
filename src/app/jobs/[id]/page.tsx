@@ -5,9 +5,10 @@ import { getSupabaseClient } from "@/lib/supabaseClient";
 import { log } from "@/lib/logger";
 
 type Job = { id: string; name: string; created_at: string };
-type Bid = { id: string; contractor_id: string | null; created_at: string };
+type Bid = { id: string; contractor_id: string | null; division_code: string | null; created_at: string };
 type Contractor = { id: string; name: string };
 type Document = { id: string; storage_path: string; file_type: string; created_at: string };
+type Division = { code: string; name: string };
 
 export default function JobDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -21,6 +22,8 @@ export default function JobDetailPage() {
   const [creating, setCreating] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [divisions, setDivisions] = useState<Division[]>([]);
+  const [divisionCode, setDivisionCode] = useState<string>("");
 
   useEffect(() => {
     (async () => {
@@ -33,8 +36,12 @@ export default function JobDetailPage() {
       const { data: jobData, error: jobErr } = await supabase.from("jobs").select("id,name,created_at").eq("id", id).single();
       if (jobErr) { setError(jobErr.message); return; }
       setJob(jobData as Job);
-      const { data: bidsData } = await supabase.from("bids").select("id,contractor_id,created_at").eq("job_id", id).order("created_at", { ascending: false });
+      const { data: bidsData } = await supabase
+        .from("bids").select("id,contractor_id,division_code,created_at")
+        .eq("job_id", id).order("created_at", { ascending: false });
       setBids(bidsData || []);
+      const { data: divs } = await supabase.from("csi_divisions").select("code,name").order("code");
+      setDivisions(divs || []);
       if (bidsData && bidsData.length) {
         const contractorIds = bidsData.map(b => b.contractor_id).filter(Boolean) as string[];
         if (contractorIds.length) {
@@ -74,13 +81,15 @@ export default function JobDetailPage() {
     const { data: bid, error: bidErr } = await supabase.from("bids").insert({
       job_id: id,
       user_id: userData.user.id,
-      contractor_id: contractorId
+      contractor_id: contractorId,
+      division_code: divisionCode || null
     }).select().single();
     if (bidErr) { setError(bidErr.message); setCreating(false); return; }
     setBids(prev => [bid as Bid, ...prev]);
     setSelectedBidId((bid as Bid).id);
     setNewContractorName("");
     setCreating(false);
+    setDivisionCode("");
   };
 
   const uploadFiles = async (files: FileList | null) => {
@@ -92,7 +101,9 @@ export default function JobDetailPage() {
     for (const file of Array.from(files)) {
       if (file.size > 25 * 1024 * 1024) { setError(`File too large: ${file.name}`); continue; }
       const safeName = file.name.replace(/[^a-zA-Z0-9_.-]/g, "_");
-      const path = `users/${uid}/jobs/${id}/bids/${selectedBidId}/${Date.now()}-${safeName}`;
+      const selectedBid = bids.find(b => b.id === selectedBidId);
+      const divPart = selectedBid?.division_code ? `div-${selectedBid.division_code}/` : "";
+      const path = `users/${uid}/jobs/${id}/${divPart}bids/${selectedBidId}/${Date.now()}-${safeName}`;
       const { error: upErr } = await supabase.storage.from("bids").upload(path, file, { upsert: false, contentType: file.type || "application/octet-stream" });
       if (upErr) { setError(upErr.message); continue; }
       const fileType = file.type || "application/octet-stream";
@@ -111,6 +122,11 @@ export default function JobDetailPage() {
   };
 
   const contractorLabel = (bid: Bid) => bid.contractor_id ? contractors[bid.contractor_id!]?.name || "Contractor" : "(No contractor)";
+  const divisionLabel = (code: string | null) => {
+    if (!code) return "No division";
+    const d = divisions.find(x => x.code === code);
+    return d ? `Div ${d.code} - ${d.name}` : `Div ${code}`;
+  };
 
   const title = useMemo(() => job ? `Job: ${job.name}` : "Loading job…", [job]);
 
@@ -123,6 +139,12 @@ export default function JobDetailPage() {
         <h2 className="text-lg font-medium">Create a Bid</h2>
         <div className="flex gap-2 items-center">
           <input className="border rounded px-3 py-2" placeholder="Contractor name (optional)" value={newContractorName} onChange={(e) => setNewContractorName(e.target.value)} />
+          <select className="border rounded px-3 py-2 bg-white text-black" value={divisionCode} onChange={(e) => setDivisionCode(e.target.value)}>
+            <option value="">No CSI division</option>
+            {divisions.map(d => (
+              <option key={d.code} value={d.code}>{`Div ${d.code} — ${d.name}`}</option>
+            ))}
+          </select>
           <button className="border rounded px-3 py-2" onClick={createBid} disabled={creating}>{creating ? "Creating…" : "Create Bid"}</button>
         </div>
       </section>
@@ -132,7 +154,9 @@ export default function JobDetailPage() {
         <select className="border rounded px-3 py-2 bg-white text-black" value={selectedBidId || ""} onChange={(e) => setSelectedBidId(e.target.value || null)}>
           <option value="">Select a bid…</option>
           {bids.map(b => (
-            <option className="text-black" key={b.id} value={b.id}>{new Date(b.created_at).toLocaleString()} — {contractorLabel(b)}</option>
+            <option className="text-black" key={b.id} value={b.id}>
+              {new Date(b.created_at).toLocaleString()} — {contractorLabel(b)} — {divisionLabel(b.division_code)}
+            </option>
           ))}
         </select>
       </section>
