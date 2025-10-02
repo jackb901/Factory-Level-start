@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { getSupabaseClient } from "@/lib/supabaseClient";
+import { levelItem } from "@/lib/level";
 
 type Item = { id: string; raw_text: string | null; qty: number | null; unit: string | null; unit_cost: number | null; total: number | null };
 
@@ -13,6 +14,7 @@ export default function BidItemsPage() {
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const pageSize = 50;
+  const [levelling, setLevelling] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -37,12 +39,52 @@ export default function BidItemsPage() {
 
   const pages = Math.ceil(totalCount / pageSize) || 1;
 
+  const levelAll = async () => {
+    setLevelling(true);
+    try {
+      const { data: user } = await supabase.auth.getUser();
+      if (!user.user) { window.location.href = "/login"; return; }
+      // Fetch all items ids+fields in chunks
+      let from = 0;
+      const batch = 500;
+      // unknown total; iterate until empty
+      // First, get count
+      const { count } = await supabase.from('line_items').select('id', { count: 'exact', head: true }).eq('bid_id', bidId);
+      const total = count || 0;
+      while (from < total) {
+        const to = Math.min(from + batch - 1, total - 1);
+        const { data } = await supabase
+          .from('line_items')
+          .select('id,raw_text,qty,unit,unit_cost,total,user_id')
+          .eq('bid_id', bidId)
+          .order('created_at', { ascending: false })
+          .range(from, to);
+        const rows = (data || []) as Array<{id:string; raw_text:string|null; qty:number|null; unit:string|null; unit_cost:number|null; total:number|null; user_id:string}>;
+        const updates = rows.map(r => {
+          const out = levelItem({ raw_text: r.raw_text, qty: r.qty, unit: r.unit, unit_cost: r.unit_cost, total: r.total });
+          return { id: r.id, user_id: r.user_id, canonical_name: out.canonical_name, unit: out.unit, qty: out.qty, unit_cost: out.unit_cost, total: out.total };
+        });
+        if (updates.length) {
+          // Upsert per-row updates to satisfy RLS check
+          const { error } = await supabase.from('line_items').upsert(updates, { onConflict: 'id' });
+          if (error) { console.error(error.message); break; }
+        }
+        from += batch;
+      }
+      // reload current page
+      setPage(0);
+    } finally {
+      setLevelling(false);
+    }
+  };
+
   return (
     <main className="p-6 space-y-4">
       <h1 className="text-2xl font-semibold">Bid Items</h1>
       <div className="flex items-center gap-2">
         <button className="border rounded px-3 py-1" onClick={() => window.location.href = `/jobs/${id}`}>Back to Job</button>
         <div className="text-sm text-gray-600">{totalCount} items</div>
+        <button className="border rounded px-3 py-1 disabled:opacity-50" disabled={levelling || totalCount===0} onClick={levelAll}>{levelling ? 'Levelling…' : 'Level Items'}</button>
       </div>
       {loading ? <p>Loading…</p> : (
         <div className="overflow-auto">
