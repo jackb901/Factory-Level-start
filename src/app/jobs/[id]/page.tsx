@@ -129,21 +129,36 @@ export default function JobDetailPage() {
     try {
       const { data: userData } = await supabase.auth.getUser();
       if (!userData.user) { window.location.href = "/login"; return; }
+      const lowerPath = doc.storage_path.toLowerCase();
+      const supported = lowerPath.endsWith('.csv') || lowerPath.endsWith('.xlsx') || lowerPath.endsWith('.xls');
+      if (!supported) {
+        setError('Unsupported file type. Please upload CSV or Excel (.xlsx/.xls).');
+        return;
+      }
       const { data: fileData, error: dlErr } = await supabase.storage.from('bids').download(doc.storage_path);
       if (dlErr || !fileData) { setError(dlErr?.message || 'Download failed'); setProcessingDocId(null); return; }
       const items: ParsedItem[] = await parseFile(fileData, doc.storage_path);
       if (!items.length) { setProcessingDocId(null); return; }
       // Insert in chunks
       const chunkSize = 200;
+      const sanitize = (s: string | null): string | null => {
+        if (s == null) return s;
+        // Remove control chars and lone surrogates that can break JSON parsing downstream
+        return s
+          .replace(/[\u0000-\u001F]/g, '')
+          .replace(/([\uD800-\uDBFF])(?![\uDC00-\uDFFF])/g, '')
+          .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
+          .slice(0, 5000);
+      };
       for (let i = 0; i < items.length; i += chunkSize) {
         const chunk = items.slice(i, i + chunkSize).map(it => ({
           user_id: userData.user!.id,
           bid_id: selectedBidId,
           category_id: null,
-          raw_text: it.raw_text,
-          canonical_name: it.canonical_name,
+          raw_text: sanitize(it.raw_text)!,
+          canonical_name: sanitize(it.canonical_name),
           qty: it.qty,
-          unit: it.unit,
+          unit: sanitize(it.unit),
           unit_cost: it.unit_cost,
           total: it.total,
           confidence: 1.0,
@@ -204,6 +219,21 @@ export default function JobDetailPage() {
             </option>
           ))}
         </select>
+        <div className="space-x-2">
+          <button
+            className="border rounded px-3 py-1 disabled:opacity-50"
+            disabled={!selectedBidId}
+            onClick={() => selectedBidId && (window.location.href = `/jobs/${id}/bids/${selectedBidId}/items`)}
+          >
+            View Items
+          </button>
+          <button
+            className="border rounded px-3 py-1"
+            onClick={() => (window.location.href = `/jobs/${id}/compare`)}
+          >
+            Compare
+          </button>
+        </div>
       </section>
 
       <section className="space-y-3">
