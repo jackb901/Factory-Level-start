@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { log } from "@/lib/logger";
+import { parseFile, type ParsedItem } from "@/lib/parse";
 
 type Job = { id: string; name: string; created_at: string };
 type Bid = { id: string; contractor_id: string | null; division_code: string | null; created_at: string };
@@ -18,6 +19,7 @@ export default function JobDetailPage() {
   const [contractors, setContractors] = useState<Record<string, Contractor>>({});
   const [selectedBidId, setSelectedBidId] = useState<string | null>(null);
   const [docs, setDocs] = useState<Document[]>([]);
+  const [processingDocId, setProcessingDocId] = useState<string | null>(null);
   const [newContractorName, setNewContractorName] = useState("");
   const [creating, setCreating] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -121,6 +123,49 @@ export default function JobDetailPage() {
     setUploading(false);
   };
 
+  const processDocument = async (doc: Document) => {
+    setProcessingDocId(doc.id);
+    setError(null);
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      if (!userData.user) { window.location.href = "/login"; return; }
+      const { data: fileData, error: dlErr } = await supabase.storage.from('bids').download(doc.storage_path);
+      if (dlErr || !fileData) { setError(dlErr?.message || 'Download failed'); setProcessingDocId(null); return; }
+      const items: ParsedItem[] = await parseFile(fileData, doc.storage_path);
+      if (!items.length) { setProcessingDocId(null); return; }
+      // Insert in chunks
+      const chunkSize = 200;
+      for (let i = 0; i < items.length; i += chunkSize) {
+        const chunk = items.slice(i, i + chunkSize).map(it => ({
+          user_id: userData.user!.id,
+          bid_id: selectedBidId,
+          category_id: null,
+          raw_text: it.raw_text,
+          canonical_name: it.canonical_name,
+          qty: it.qty,
+          unit: it.unit,
+          unit_cost: it.unit_cost,
+          total: it.total,
+          confidence: 1.0,
+        }));
+        const { error } = await supabase.from('line_items').insert(chunk);
+        if (error) { setError(error.message); break; }
+      }
+      // Update processing_jobs best-effort
+      await supabase.from('processing_jobs').insert({
+        user_id: userData.user.id,
+        job_id: id,
+        stage: 'parsed',
+        state: 'done',
+        progress: 100,
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setProcessingDocId(null);
+    }
+  };
+
   const contractorLabel = (bid: Bid) => bid.contractor_id ? contractors[bid.contractor_id!]?.name || "Contractor" : "(No contractor)";
   const divisionLabel = (code: string | null) => {
     if (!code) return "No division";
@@ -171,9 +216,16 @@ export default function JobDetailPage() {
         <h2 className="text-lg font-medium">Documents</h2>
         <ul className="space-y-2">
           {docs.map(d => (
-            <li key={d.id} className="border rounded p-2 text-sm flex justify-between">
-              <span>{d.file_type}</span>
-              <span className="text-gray-500">{new Date(d.created_at).toLocaleString()}</span>
+            <li key={d.id} className="border rounded p-2 text-sm flex items-center justify-between gap-4">
+              <div className="flex flex-col">
+                <span>{d.file_type}</span>
+                <span className="text-gray-500">{new Date(d.created_at).toLocaleString()}</span>
+              </div>
+              <button
+                className="border rounded px-3 py-1"
+                disabled={processingDocId === d.id || !selectedBidId}
+                onClick={() => processDocument(d)}
+              >{processingDocId === d.id ? 'Processing…' : 'Process'}</button>
             </li>
           ))}
           {!docs.length && <li className="text-sm text-gray-600">No documents uploaded yet.</li>}
