@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
     const anthropic = new Anthropic({ apiKey: anthropicKey });
 
     // Collect items from all docs
-    let extracted: Array<{ raw_text: string; qty: number | null; unit: string | null; unit_cost: number | null; total: number | null }> = [];
+    const extracted: Array<{ raw_text: string; qty: number | null; unit: string | null; unit_cost: number | null; total: number | null }> = [];
     for (const d of docs) {
       const { data: blob, error } = await supabase.storage.from("bids").download(d.storage_path);
       if (error || !blob) continue;
@@ -64,20 +64,33 @@ export async function POST(req: NextRequest) {
       messages: [user],
     });
 
-    const content = resp.content?.[0] && (resp.content[0] as any).type === "text" ? (resp.content[0] as any).text : "{}";
-    let parsed: any;
-    try { parsed = JSON.parse(content as string); } catch {
+    // Extract the first text block safely
+    const textBlock = Array.isArray(resp.content)
+      ? (resp.content.find((b: unknown) => {
+          if (typeof b !== 'object' || b === null) return false;
+          const r = b as Record<string, unknown>;
+          return r['type'] === 'text' && typeof r['text'] === 'string';
+        }) as { type: string; text?: string } | undefined)
+      : undefined;
+    const content = textBlock?.text ?? "{}";
+
+    type AIItem = { raw_text: string; canonical_name: string | null; qty: number | null; unit: string | null; unit_cost: number | null; total: number | null };
+    type AISummary = { includes: string[]; excludes: string[]; allowances: string[]; alternates: string[] };
+    type AIResponse = { items?: AIItem[]; summary?: AISummary };
+
+    let parsed: AIResponse;
+    try { parsed = JSON.parse(content) as AIResponse; } catch {
       return new Response(JSON.stringify({ error: "AI output was not valid JSON" }), { status: 502 });
     }
-    const aiItems: Array<{ raw_text: string; canonical_name: string | null; qty: number | null; unit: string | null; unit_cost: number | null; total: number | null }> = parsed.items || [];
-    const summary = parsed.summary || { includes: [], excludes: [], allowances: [], alternates: [] };
+    const aiItems: AIItem[] = parsed.items || [];
+    const summary: AISummary = parsed.summary || { includes: [], excludes: [], allowances: [], alternates: [] };
 
     // Replace existing items for this bid (owned by the user)
     await supabase.from("line_items").delete().eq("bid_id", bidId);
 
     const chunkSize = 200;
     for (let i = 0; i < aiItems.length; i += chunkSize) {
-      const chunk = aiItems.slice(i, i + chunkSize).map((it: any) => {
+      const chunk = aiItems.slice(i, i + chunkSize).map((it) => {
         const out = levelItem({ raw_text: it.raw_text, qty: it.qty, unit: it.unit, unit_cost: it.unit_cost, total: it.total });
         const sanitize = (s: string | null): string | null => s == null ? s : s.replace(/[\u0000-\u001F]/g, '').slice(0, 5000);
         return {
@@ -106,7 +119,8 @@ export async function POST(req: NextRequest) {
     await supabase.from("bid_analyses").insert({ user_id: bid.user_id, bid_id: bidId, division_code: bid.division_code, summary, ...counts });
 
     return new Response(JSON.stringify({ ok: true, items: aiItems.length, summary: counts }), { status: 200 });
-  } catch (e: any) {
-    return new Response(JSON.stringify({ error: e.message || "Unknown error" }), { status: 500 });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Unknown error";
+    return new Response(JSON.stringify({ error: msg }), { status: 500 });
   }
 }
