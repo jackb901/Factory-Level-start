@@ -143,15 +143,6 @@ export default function JobDetailPage() {
       if (!items.length) { setProcessingDocId(null); return; }
       // Insert in chunks
       const chunkSize = 200;
-      const sanitize = (s: string | null): string | null => {
-        if (s == null) return s;
-        // Remove control chars and lone surrogates that can break JSON parsing downstream
-        return s
-          .replace(/[\u0000-\u001F]/g, '')
-          .replace(/([\uD800-\uDBFF])(?![\uDC00-\uDFFF])/g, '')
-          .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
-          .slice(0, 5000);
-      };
       for (let i = 0; i < items.length; i += chunkSize) {
         const chunk = items.slice(i, i + chunkSize).map(it => {
           const lv = levelItem({ raw_text: it.raw_text, qty: it.qty, unit: it.unit, unit_cost: it.unit_cost, total: it.total });

@@ -1,6 +1,6 @@
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
-import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type TextContent, type TextItem } from 'pdfjs-dist';
+import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
 
 export type ParsedItem = {
   raw_text: string;
@@ -55,7 +55,7 @@ export async function parseCSV(file: Blob, onProgress?: (p: number) => void): Pr
   const headers = out.meta.fields;
   const map = detectHeaders(headers);
   const data = (out.data || []) as Record<string, unknown>[];
-  const items = data.map((row: Record<string, unknown>, idx: number) => {
+  const items = data.map((row: Record<string, unknown>) => {
     const get = (key?: string): unknown => (key ? row[key] : undefined);
     return {
       raw_text: String(get(map.description) ?? ''),
@@ -106,23 +106,27 @@ export async function parseXLSX(file: Blob, onProgress?: (p: number) => void): P
   return items;
 }
 
+type PdfJsTextItem = { str?: string; transform?: number[] };
+type PdfJsTextContent = { items: PdfJsTextItem[] };
+type PDFDocumentProxyLite = { numPages: number; getPage: (n: number) => Promise<{ getTextContent: () => Promise<unknown> }> };
+
 async function parsePDF(file: Blob, onProgress?: (p: number) => void): Promise<ParsedItem[]> {
   // Use hosted worker for simplicity
   GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
   const ab = await file.arrayBuffer();
-  const doc: PDFDocumentProxy = await getDocument({ data: ab }).promise;
+  const doc = await getDocument({ data: ab }).promise as unknown as PDFDocumentProxyLite;
   const items: ParsedItem[] = [];
   for (let p = 1; p <= doc.numPages; p++) {
     const page = await doc.getPage(p);
-    const tc: TextContent = await page.getTextContent();
+    const tc = await page.getTextContent() as unknown as PdfJsTextContent;
     // Group by text line via y coordinate rounding
     const lines = new Map<number, string[]>();
     for (const it of tc.items) {
-      if (typeof (it as TextItem).str === 'string') {
-        const t = it as TextItem;
-        const y = Math.round((t.transform[5] || 0) as number);
+      if (typeof it.str === 'string') {
+        const t = it as PdfJsTextItem;
+        const y = Math.round(((t.transform && t.transform[5]) || 0));
         const arr = lines.get(y) || [];
-        arr.push(t.str);
+        arr.push(t.str!);
         lines.set(y, arr);
       }
     }
