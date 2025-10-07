@@ -6,7 +6,7 @@ import { getSupabaseClient } from "@/lib/supabaseClient";
 type Bid = { id: string; contractor_id: string | null; division_code: string | null };
 type Contractor = { id: string; name: string };
 type Division = { code: string; name: string };
-type Item = { bid_id: string; total: number | null; qty: number | null; unit_cost: number | null };
+type Item = { bid_id: string; total: number | null; qty: number | null; unit_cost: number | null; canonical_name: string | null; raw_text: string | null };
 
 export default function ComparePage() {
   const { id } = useParams<{ id: string }>();
@@ -16,6 +16,7 @@ export default function ComparePage() {
   const [divisions, setDivisions] = useState<Division[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedDivision, setSelectedDivision] = useState<string>("");
 
   useEffect(() => {
     (async () => {
@@ -41,7 +42,7 @@ export default function ComparePage() {
       if (bidIds.length) {
         const { data: li } = await supabase
           .from('line_items')
-          .select('bid_id,total,qty,unit_cost')
+          .select('bid_id,total,qty,unit_cost,canonical_name,raw_text')
           .in('bid_id', bidIds);
         setItems((li || []) as Item[]);
       } else {
@@ -84,6 +85,58 @@ export default function ComparePage() {
 
   const toCurrency = (n: number) => n.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
 
+  // Division-focused item-level comparison helpers
+  const bidsInDivision = useMemo(() => bids.filter(b => (selectedDivision ? b.division_code === selectedDivision : true)), [bids, selectedDivision]);
+  const contractorColsInDiv = useMemo(() => {
+    const ids = Array.from(new Set(bidsInDivision.map(b => b.contractor_id).filter(Boolean))) as string[];
+    return ids.map(cid => ({ id: cid, name: contractors[cid]?.name || 'Contractor', bidId: bidsInDivision.find(b => b.contractor_id === cid)?.id }));
+  }, [bidsInDivision, contractors]);
+  const canonicalRows = useMemo(() => {
+    if (!selectedDivision) return [] as string[];
+    const bidIds = bidsInDivision.map(b => b.id);
+    const names = new Set<string>();
+    for (const it of items) {
+      if (bidIds.includes(it.bid_id)) names.add(it.canonical_name || 'Uncategorized');
+    }
+    return Array.from(names).sort();
+  }, [items, bidsInDivision, selectedDivision]);
+  const matrix = useMemo(() => {
+    const m: Record<string, Record<string, number>> = {};
+    const bidIds = bidsInDivision.map(b => b.id);
+    for (const name of canonicalRows) m[name] = {};
+    for (const it of items) {
+      if (!bidIds.includes(it.bid_id)) continue;
+      const name = it.canonical_name || 'Uncategorized';
+      const val = (it.total ?? ((it.qty ?? 0) * (it.unit_cost ?? 0))) || 0;
+      m[name][it.bid_id] = (m[name][it.bid_id] || 0) + val;
+    }
+    return m;
+  }, [items, bidsInDivision, canonicalRows]);
+  const summary = useMemo(() => {
+    const bidIds = bidsInDivision.map(b => b.id);
+    const s: Record<string, { includes: number; excludes: number; allowances: number; alternates: number }> = {};
+    for (const bidId of bidIds) s[bidId] = { includes: 0, excludes: 0, allowances: 0, alternates: 0 };
+    const inc = /\b(include|included|includes)\b/i;
+    const exc = /\b(exclude|excluded|excludes|not\s+include)\b/i;
+    const allw = /\b(allowance|allowances|allow)\b/i;
+    const alt = /\b(alternate|alternates|alt\.)\b/i;
+    for (const it of items) {
+      if (!bidIds.includes(it.bid_id)) continue;
+      const t = it.raw_text || '';
+      if (inc.test(t)) s[it.bid_id].includes++;
+      if (exc.test(t)) s[it.bid_id].excludes++;
+      if (allw.test(t)) s[it.bid_id].allowances++;
+      if (alt.test(t)) s[it.bid_id].alternates++;
+    }
+    return s;
+  }, [items, bidsInDivision]);
+  const markWinner = async (contractorId: string) => {
+    const targetBid = bidsInDivision.find(b => b.contractor_id === contractorId && (b.division_code || '') === (selectedDivision || ''));
+    if (!targetBid) return;
+    await supabase.from('bids').update({ is_winner: false }).eq('division_code', selectedDivision || null).eq('job_id', id);
+    await supabase.from('bids').update({ is_winner: true }).eq('id', targetBid.id);
+  };
+
   const exportCSV = () => {
     const headers = ['Division', ...contractorCols.map(c => c.name)];
     const lines = [headers.join(',')];
@@ -106,6 +159,15 @@ export default function ComparePage() {
       <div className="flex gap-2 items-center">
         <button className="border rounded px-3 py-1" onClick={() => window.location.href = `/jobs/${id}`}>Back to Job</button>
         <button className="border rounded px-3 py-1" onClick={exportCSV}>Export CSV</button>
+      </div>
+      <div className="flex gap-2 items-center">
+        <label className="text-sm">Focus CSI Division:</label>
+        <select className="border rounded px-2 py-1 bg-white text-black" value={selectedDivision} onChange={(e)=>setSelectedDivision(e.target.value)}>
+          <option value="">All divisions</option>
+          {divisions.map(d => (
+            <option key={d.code} value={d.code}>{`Div ${d.code} — ${d.name}`}</option>
+          ))}
+        </select>
       </div>
       {loading ? <p>Loading…</p> : (
         <div className="overflow-auto">
@@ -133,6 +195,57 @@ export default function ComparePage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {selectedDivision && (
+        <section className="space-y-3">
+          <h2 className="text-lg font-medium">Division {selectedDivision} — Item-level comparison</h2>
+          <div className="overflow-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left border-b">
+                  <th className="p-2">Canonical Item</th>
+                  {contractorColsInDiv.map(c => (
+                    <th key={c.id} className="p-2">
+                      <div className="flex items-center gap-2">
+                        <span>{c.name}</span>
+                        <button className="border rounded px-2 py-0.5 text-xs" onClick={()=>markWinner(c.id)}>Mark winner</button>
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {canonicalRows.map(name => (
+                  <tr key={name} className="border-b">
+                    <td className="p-2">{name}</td>
+                    {contractorColsInDiv.map(c => (
+                      <td key={c.id} className="p-2">{toCurrency((matrix[name]?.[c.bidId || ''] || 0))}</td>
+                    ))}
+                  </tr>
+                ))}
+                {!canonicalRows.length && (
+                  <tr><td className="p-2 text-gray-600" colSpan={1 + contractorColsInDiv.length}>No items.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="space-y-2">
+            <h3 className="font-medium">Inclusions / Exclusions summary</h3>
+            <ul className="list-disc pl-5 text-sm">
+              {contractorColsInDiv.map(c => (
+                <li key={c.id}>
+                  <span className="font-medium">{c.name}:</span>
+                  <span className="ml-2">Includes: {summary[c.bidId || '']?.includes || 0}</span>
+                  <span className="ml-2">Excludes: {summary[c.bidId || '']?.excludes || 0}</span>
+                  <span className="ml-2">Allowances: {summary[c.bidId || '']?.allowances || 0}</span>
+                  <span className="ml-2">Alternates: {summary[c.bidId || '']?.alternates || 0}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
       )}
     </main>
   );

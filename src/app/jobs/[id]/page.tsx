@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { log } from "@/lib/logger";
 import { parseFile, type ParsedItem } from "@/lib/parse";
+import { levelItem } from "@/lib/level";
 
 type Job = { id: string; name: string; created_at: string };
 type Bid = { id: string; contractor_id: string | null; division_code: string | null; created_at: string };
@@ -151,18 +152,29 @@ export default function JobDetailPage() {
           .slice(0, 5000);
       };
       for (let i = 0; i < items.length; i += chunkSize) {
-        const chunk = items.slice(i, i + chunkSize).map(it => ({
+        const chunk = items.slice(i, i + chunkSize).map(it => {
+          const lv = levelItem({ raw_text: it.raw_text, qty: it.qty, unit: it.unit, unit_cost: it.unit_cost, total: it.total });
+          const sanitize = (s: string | null): string | null => {
+            if (s == null) return s;
+            return s
+              .replace(/[\u0000-\u001F]/g, '')
+              .replace(/([\uD800-\uDBFF])(?![\uDC00-\uDFFF])/g, '')
+              .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
+              .slice(0, 5000);
+          };
+          return {
           user_id: userData.user!.id,
           bid_id: selectedBidId,
           category_id: null,
-          raw_text: sanitize(it.raw_text)!,
-          canonical_name: sanitize(it.canonical_name),
-          qty: it.qty,
-          unit: sanitize(it.unit),
-          unit_cost: it.unit_cost,
-          total: it.total,
-          confidence: 1.0,
-        }));
+            raw_text: sanitize(it.raw_text)!,
+            canonical_name: sanitize(lv.canonical_name),
+            qty: lv.qty,
+            unit: sanitize(lv.unit),
+            unit_cost: lv.unit_cost,
+            total: lv.total,
+            confidence: 1.0,
+          };
+        });
         const { error } = await supabase.from('line_items').insert(chunk);
         if (error) { setError(error.message); break; }
       }
