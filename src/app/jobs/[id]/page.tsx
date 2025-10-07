@@ -21,6 +21,7 @@ export default function JobDetailPage() {
   const [selectedBidId, setSelectedBidId] = useState<string | null>(null);
   const [docs, setDocs] = useState<Document[]>([]);
   const [processingDocId, setProcessingDocId] = useState<string | null>(null);
+  const [processingPct, setProcessingPct] = useState<number>(0);
   const [newContractorName, setNewContractorName] = useState("");
   const [creating, setCreating] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -131,14 +132,14 @@ export default function JobDetailPage() {
       const { data: userData } = await supabase.auth.getUser();
       if (!userData.user) { window.location.href = "/login"; return; }
       const lowerPath = doc.storage_path.toLowerCase();
-      const supported = lowerPath.endsWith('.csv') || lowerPath.endsWith('.xlsx') || lowerPath.endsWith('.xls');
+      const supported = lowerPath.endsWith('.csv') || lowerPath.endsWith('.xlsx') || lowerPath.endsWith('.xls') || lowerPath.endsWith('.pdf');
       if (!supported) {
         setError('Unsupported file type. Please upload CSV or Excel (.xlsx/.xls).');
         return;
       }
       const { data: fileData, error: dlErr } = await supabase.storage.from('bids').download(doc.storage_path);
       if (dlErr || !fileData) { setError(dlErr?.message || 'Download failed'); setProcessingDocId(null); return; }
-      const items: ParsedItem[] = await parseFile(fileData, doc.storage_path);
+      const items: ParsedItem[] = await parseFile(fileData, doc.storage_path, (p) => setProcessingPct(p));
       if (!items.length) { setProcessingDocId(null); return; }
       // Insert in chunks
       const chunkSize = 200;
@@ -190,6 +191,7 @@ export default function JobDetailPage() {
       setError((e as Error).message);
     } finally {
       setProcessingDocId(null);
+      setProcessingPct(0);
     }
   };
 
@@ -263,11 +265,18 @@ export default function JobDetailPage() {
                 <span>{d.file_type}</span>
                 <span className="text-gray-500">{new Date(d.created_at).toLocaleString()}</span>
               </div>
-              <button
+              <div className="flex items-center gap-3">
+                <button
                 className="border rounded px-3 py-1"
                 disabled={processingDocId === d.id || !selectedBidId}
                 onClick={() => processDocument(d)}
               >{processingDocId === d.id ? 'Processing…' : 'Process'}</button>
+                {processingDocId === d.id && (
+                  <div className="h-2 w-40 bg-gray-200 rounded">
+                    <div className="h-2 bg-blue-500 rounded" style={{ width: `${Math.max(5, processingPct)}%` }} />
+                  </div>
+                )}
+              </div>
             </li>
           ))}
           {!docs.length && <li className="text-sm text-gray-600">No documents uploaded yet.</li>}

@@ -1,5 +1,6 @@
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
+import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type TextContent, type TextItem } from 'pdfjs-dist';
 
 export type ParsedItem = {
   raw_text: string;
@@ -47,13 +48,14 @@ function toNum(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export async function parseCSV(file: Blob): Promise<ParsedItem[]> {
+export async function parseCSV(file: Blob, onProgress?: (p: number) => void): Promise<ParsedItem[]> {
   const text = await file.text();
   const out = Papa.parse<Record<string, unknown>>(text, { header: true, skipEmptyLines: true });
   if (!out.meta.fields) return [];
   const headers = out.meta.fields;
   const map = detectHeaders(headers);
-  return (out.data || []).map((row: Record<string, unknown>) => {
+  const data = (out.data || []) as Record<string, unknown>[];
+  const items = data.map((row: Record<string, unknown>, idx: number) => {
     const get = (key?: string): unknown => (key ? row[key] : undefined);
     return {
       raw_text: String(get(map.description) ?? ''),
@@ -66,9 +68,11 @@ export async function parseCSV(file: Blob): Promise<ParsedItem[]> {
       total: toNum(get(map.total))
     } as ParsedItem;
   }).filter(i => i.raw_text || i.total !== null || i.qty !== null);
+  if (onProgress) onProgress(100);
+  return items;
 }
 
-export async function parseXLSX(file: Blob): Promise<ParsedItem[]> {
+export async function parseXLSX(file: Blob, onProgress?: (p: number) => void): Promise<ParsedItem[]> {
   const ab = await file.arrayBuffer();
   const wb = XLSX.read(ab, { type: 'array' });
   const wsName = wb.SheetNames[0];
@@ -96,16 +100,52 @@ export async function parseXLSX(file: Blob): Promise<ParsedItem[]> {
     if (raw_text || qty !== null || total !== null) {
       items.push({ raw_text, canonical_name: null, qty, unit, unit_cost, total });
     }
+    if (onProgress) onProgress(Math.min(99, Math.round((i / rows.length) * 100)));
+  }
+  if (onProgress) onProgress(100);
+  return items;
+}
+
+async function parsePDF(file: Blob, onProgress?: (p: number) => void): Promise<ParsedItem[]> {
+  // Use hosted worker for simplicity
+  GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const ab = await file.arrayBuffer();
+  const doc: PDFDocumentProxy = await getDocument({ data: ab }).promise;
+  const items: ParsedItem[] = [];
+  for (let p = 1; p <= doc.numPages; p++) {
+    const page = await doc.getPage(p);
+    const tc: TextContent = await page.getTextContent();
+    // Group by text line via y coordinate rounding
+    const lines = new Map<number, string[]>();
+    for (const it of tc.items) {
+      if (typeof (it as TextItem).str === 'string') {
+        const t = it as TextItem;
+        const y = Math.round((t.transform[5] || 0) as number);
+        const arr = lines.get(y) || [];
+        arr.push(t.str);
+        lines.set(y, arr);
+      }
+    }
+    for (const [, parts] of Array.from(lines.entries()).sort((a,b)=>b[0]-a[0])) {
+      const line = parts.join(' ').replace(/\s+/g, ' ').trim();
+      if (!line) continue;
+      // Heuristic: find trailing currency/number as total
+      const m = line.match(/\s([$€£]?\s?[-+]?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)[^0-9]*$/);
+      const total = m ? toNum(m[1]) : null;
+      items.push({ raw_text: line, canonical_name: null, qty: null, unit: null, unit_cost: null, total });
+    }
+    if (onProgress) onProgress(Math.round((p / doc.numPages) * 100));
   }
   return items;
 }
 
-export async function parseFile(file: Blob, name: string): Promise<ParsedItem[]> {
+export async function parseFile(file: Blob, name: string, onProgress?: (p: number) => void): Promise<ParsedItem[]> {
   const lower = name.toLowerCase();
-  if (lower.endsWith('.csv')) return parseCSV(file);
-  if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) return parseXLSX(file);
+  if (lower.endsWith('.csv')) return parseCSV(file, onProgress);
+  if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) return parseXLSX(file, onProgress);
+  if (lower.endsWith('.pdf')) return parsePDF(file, onProgress);
   // Unknown type: try CSV first
-  try { return await parseCSV(file); } catch {}
-  try { return await parseXLSX(file); } catch {}
+  try { return await parseCSV(file, onProgress); } catch {}
+  try { return await parseXLSX(file, onProgress); } catch {}
   return [];
 }
