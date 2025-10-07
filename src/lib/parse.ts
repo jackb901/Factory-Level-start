@@ -111,9 +111,11 @@ type PdfJsTextContent = { items: PdfJsTextItem[] };
 type PDFDocumentProxyLite = { numPages: number; getPage: (n: number) => Promise<{ getTextContent: () => Promise<unknown> }> };
 
 async function parsePDF(file: Blob, onProgress?: (p: number) => void): Promise<ParsedItem[]> {
-  // Explicitly set worker URL to match installed pdfjs version.
-  // Keep in sync with your installed version (see node_modules/pdfjs-dist/package.json).
-  GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.296/pdf.worker.min.js';
+  // Point to the worker bundled with pdfjs-dist to avoid CDN/CORS issues.
+  // Next.js will rewrite this to a proper URL at runtime.
+  // Example per pdfjs docs for ESM bundlers:
+  // https://github.com/mozilla/pdf.js/wiki/Frequently-Asked-Questions#3-how-to-use-pdfjs-in-a-web-application
+  GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
   const ab = await file.arrayBuffer();
   const doc = await getDocument({ data: ab }).promise as unknown as PDFDocumentProxyLite;
   const items: ParsedItem[] = [];
