@@ -134,7 +134,7 @@ export default function JobDetailPage() {
       const lowerPath = doc.storage_path.toLowerCase();
       const supported = lowerPath.endsWith('.csv') || lowerPath.endsWith('.xlsx') || lowerPath.endsWith('.xls') || lowerPath.endsWith('.pdf');
       if (!supported) {
-        setError('Unsupported file type. Please upload CSV or Excel (.xlsx/.xls).');
+        setError('Unsupported file type. Please upload PDF, CSV, or Excel (.xlsx/.xls).');
         return;
       }
       const { data: fileData, error: dlErr } = await supabase.storage.from('bids').download(doc.storage_path);
