@@ -238,6 +238,29 @@ export default function JobDetailPage() {
           >
             Compare
           </button>
+          <button
+            className="border rounded px-3 py-1 disabled:opacity-50"
+            disabled={!selectedBidId}
+            onClick={async () => {
+              if (!selectedBidId) return;
+              const { data: session } = await supabase.auth.getSession();
+              const token = session.session?.access_token;
+              if (!token) { setError('Missing session'); return; }
+              const res = await fetch('/api/ai/level', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ bidId: selectedBidId }),
+              });
+              if (!res.ok) {
+                const t = await res.text();
+                setError(`AI leveling failed: ${t}`);
+                return;
+              }
+              window.location.href = `/jobs/${id}/bids/${selectedBidId}/items`;
+            }}
+          >
+            AI Level
+          </button>
         </div>
       </section>
 
