@@ -1,6 +1,6 @@
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
-import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
+import { getDocument } from 'pdfjs-dist';
 
 export type ParsedItem = {
   raw_text: string;
@@ -111,8 +111,7 @@ type PdfJsTextContent = { items: PdfJsTextItem[] };
 type PDFDocumentProxyLite = { numPages: number; getPage: (n: number) => Promise<{ getTextContent: () => Promise<unknown> }> };
 
 async function parsePDF(file: Blob, onProgress?: (p: number) => void): Promise<ParsedItem[]> {
-  // Use hosted worker for simplicity
-  GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  // Use default worker resolution provided by bundler; no explicit workerSrc to avoid version mismatch.
   const ab = await file.arrayBuffer();
   const doc = await getDocument({ data: ab }).promise as unknown as PDFDocumentProxyLite;
   const items: ParsedItem[] = [];
