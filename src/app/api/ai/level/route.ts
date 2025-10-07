@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
     const examples = extracted.slice(0, 200).map((e) => ({ description: e.raw_text, qty: e.qty, unit: e.unit, unit_cost: e.unit_cost, total: e.total }));
 
     const system = `You are a construction bid leveling assistant. Normalize items into a consistent schema, map to canonical names, and detect inclusions/exclusions/allowances/alternates. Output strict JSON only.`;
-    const user = {
+    const userMsg: { role: "user"; content: { type: "text"; text: string }[] } = {
       role: "user",
       content: [
         {
@@ -54,14 +54,14 @@ export async function POST(req: NextRequest) {
           text: `Input items (sample):\n${JSON.stringify(examples).slice(0, 20000)}\n\nDesired JSON format:\n{ "items": [{"canonical_name": string | null, "raw_text": string, "qty": number | null, "unit": string | null, "unit_cost": number | null, "total": number | null}], "summary": {"includes": string[], "excludes": string[], "allowances": string[], "alternates": string[] } }`,
         },
       ],
-    } as const;
+    };
 
     const resp = await anthropic.messages.create({
       model: "claude-3-5-sonnet-20241022",
       max_tokens: 4000,
       temperature: 0.2,
       system,
-      messages: [user],
+      messages: [userMsg],
     });
 
     // Extract the first text block safely
