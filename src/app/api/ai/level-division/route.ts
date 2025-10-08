@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { extractFromBuffer, type ExtractedItem } from "@/lib/serverExtract";
 
 export const dynamic = "force-dynamic";
+export const runtime = 'nodejs';
 
 type Report = {
   division_code: string | null;
