@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
-import pdfParse from 'pdf-parse';
+import { pdf as pdfParse } from 'pdf-parse';
 
 export type ExtractedItem = {
   raw_text: string;
