@@ -19,8 +19,6 @@ export default function JobDetailPage() {
   const [contractors, setContractors] = useState<Record<string, Contractor>>({});
   const [selectedBidId, setSelectedBidId] = useState<string | null>(null);
   const [docs, setDocs] = useState<Document[]>([]);
-  const [processingDocId, setProcessingDocId] = useState<string | null>(null);
-  const [processingPct, setProcessingPct] = useState<number>(0);
   const [newContractorName, setNewContractorName] = useState("");
   const [creating, setCreating] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -125,66 +123,7 @@ export default function JobDetailPage() {
     setUploading(false);
   };
 
-  const processDocument = async (doc: Document) => {
-    setProcessingDocId(doc.id);
-    setError(null);
-    try {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) { window.location.href = "/login"; return; }
-      const lowerPath = doc.storage_path.toLowerCase();
-      const supported = lowerPath.endsWith('.csv') || lowerPath.endsWith('.xlsx') || lowerPath.endsWith('.xls') || lowerPath.endsWith('.pdf');
-      if (!supported) {
-        setError('Unsupported file type. Please upload PDF, CSV, or Excel (.xlsx/.xls).');
-        return;
-      }
-      const { data: fileData, error: dlErr } = await supabase.storage.from('bids').download(doc.storage_path);
-      if (dlErr || !fileData) { setError(dlErr?.message || 'Download failed'); setProcessingDocId(null); return; }
-      const items: ParsedItem[] = await parseFile(fileData, doc.storage_path, (p) => setProcessingPct(p));
-      if (!items.length) { setProcessingDocId(null); return; }
-      // Insert in chunks
-      const chunkSize = 200;
-      for (let i = 0; i < items.length; i += chunkSize) {
-        const chunk = items.slice(i, i + chunkSize).map(it => {
-          const lv = levelItem({ raw_text: it.raw_text, qty: it.qty, unit: it.unit, unit_cost: it.unit_cost, total: it.total });
-          const sanitize = (s: string | null): string | null => {
-            if (s == null) return s;
-            return s
-              .replace(/[\u0000-\u001F]/g, '')
-              .replace(/([\uD800-\uDBFF])(?![\uDC00-\uDFFF])/g, '')
-              .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
-              .slice(0, 5000);
-          };
-          return {
-          user_id: userData.user!.id,
-          bid_id: selectedBidId,
-          category_id: null,
-            raw_text: sanitize(it.raw_text)!,
-            canonical_name: sanitize(lv.canonical_name),
-            qty: lv.qty,
-            unit: sanitize(lv.unit),
-            unit_cost: lv.unit_cost,
-            total: lv.total,
-            confidence: 1.0,
-          };
-        });
-        const { error } = await supabase.from('line_items').insert(chunk);
-        if (error) { setError(error.message); break; }
-      }
-      // Update processing_jobs best-effort
-      await supabase.from('processing_jobs').insert({
-        user_id: userData.user.id,
-        job_id: id,
-        stage: 'parsed',
-        state: 'done',
-        progress: 100,
-      });
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setProcessingDocId(null);
-      setProcessingPct(0);
-    }
-  };
+  // Client-side per-document processing removed in favor of division-level AI leveling
 
   const contractorLabel = (bid: Bid) => bid.contractor_id ? contractors[bid.contractor_id!]?.name || "Contractor" : "(No contractor)";
   const divisionLabel = (code: string | null) => {
