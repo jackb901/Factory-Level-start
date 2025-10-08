@@ -3,8 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { log } from "@/lib/logger";
-import { parseFile, type ParsedItem } from "@/lib/parse";
-import { levelItem } from "@/lib/level";
+// Client-side parsing removed in favor of server-side AI division-level leveling
 
 type Job = { id: string; name: string; created_at: string };
 type Bid = { id: string; contractor_id: string | null; division_code: string | null; created_at: string };
@@ -71,6 +70,7 @@ export default function JobDetailPage() {
     setCreating(true); setError(null);
     const { data: userData } = await supabase.auth.getUser();
     if (!userData.user) { window.location.href = "/login"; return; }
+    if (!divisionCode) { setError('Select a CSI division first'); setCreating(false); return; }
     let contractorId: string | null = null;
     if (newContractorName.trim()) {
       const { data: cons, error } = await supabase
@@ -210,7 +210,7 @@ export default function JobDetailPage() {
               <option key={d.code} value={d.code}>{`Div ${d.code} — ${d.name}`}</option>
             ))}
           </select>
-          <button className="border rounded px-3 py-2" onClick={createBid} disabled={creating}>{creating ? "Creating…" : "Create Bid"}</button>
+          <button className="border rounded px-3 py-2 disabled:opacity-50" onClick={createBid} disabled={creating || !divisionCode}>{creating ? "Creating…" : "Create Bid"}</button>
         </div>
       </section>
 
@@ -279,18 +279,7 @@ export default function JobDetailPage() {
                 <span>{d.file_type}</span>
                 <span className="text-gray-500">{new Date(d.created_at).toLocaleString()}</span>
               </div>
-              <div className="flex items-center gap-3">
-                <button
-                className="border rounded px-3 py-1"
-                disabled={processingDocId === d.id || !selectedBidId}
-                onClick={() => processDocument(d)}
-              >{processingDocId === d.id ? 'Processing…' : 'Process'}</button>
-                {processingDocId === d.id && (
-                  <div className="h-2 w-40 bg-gray-200 rounded">
-                    <div className="h-2 bg-blue-500 rounded" style={{ width: `${Math.max(5, processingPct)}%` }} />
-                  </div>
-                )}
-              </div>
+              {/* Processing removed in favor of AI division-level leveleing */}
             </li>
           ))}
           {!docs.length && <li className="text-sm text-gray-600">No documents uploaded yet.</li>}
@@ -298,19 +287,30 @@ export default function JobDetailPage() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-lg font-medium">Processing (demo)</h2>
-        <button
-          className="border rounded px-3 py-2"
-          onClick={() => {
-            const es = new EventSource(`/api/progress?jobId=${id}`);
-            es.onmessage = (e) => {
-              try { const data = JSON.parse(e.data); console.log("progress", data); } catch {}
-              if (e.data.includes('done')) es.close();
-            };
-            es.onerror = () => es.close();
-          }}
-        >Start Demo Progress</button>
-        <p className="text-xs text-gray-600">Opens an SSE stream and logs progress to the console.</p>
+        <h2 className="text-lg font-medium">AI Bid Level (by division)</h2>
+        <div className="flex gap-2 items-center">
+          <select className="border rounded px-3 py-2 bg-white text-black" value={divisionCode} onChange={(e) => setDivisionCode(e.target.value)}>
+            <option value="">Select division…</option>
+            {divisions.map(d => (
+              <option key={d.code} value={d.code}>{`Div ${d.code} — ${d.name}`}</option>
+            ))}
+          </select>
+          <button
+            className="border rounded px-3 py-1 disabled:opacity-50"
+            disabled={!divisionCode}
+            onClick={async () => {
+              const { data: session } = await supabase.auth.getSession();
+              const token = session.session?.access_token; if (!token) { setError('Missing session'); return; }
+              const res = await fetch('/api/ai/level-division', {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ jobId: id, division: divisionCode })
+              });
+              if (!res.ok) { setError(`AI division level failed`); return; }
+              window.location.href = `/jobs/${id}/division/${divisionCode}/report`;
+            }}
+          >Run AI Bid Level</button>
+          <button className="border rounded px-3 py-1 disabled:opacity-50" disabled={!divisionCode} onClick={() => divisionCode && (window.location.href = `/jobs/${id}/division/${divisionCode}/report`)}>View Bid Level</button>
+        </div>
       </section>
     </main>
   );
