@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@supabase/supabase-js";
-import { parseFile } from "@/lib/parse";
 import { levelItem } from "@/lib/level";
 
 export const dynamic = "force-dynamic";
@@ -21,27 +20,26 @@ export async function POST(req: NextRequest) {
     const { data: bid, error: bidErr } = await supabase.from("bids").select("id, user_id, division_code, job_id").eq("id", bidId).single();
     if (bidErr || !bid) return new Response(JSON.stringify({ error: bidErr?.message || "Bid not found" }), { status: 404 });
 
-    const { data: docs } = await supabase.from("documents").select("id, storage_path, file_type, created_at").eq("bid_id", bidId).order("created_at");
-    if (!docs || !docs.length) return new Response(JSON.stringify({ error: "No documents for this bid." }), { status: 400 });
-
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
     if (!anthropicKey) return new Response(JSON.stringify({ error: "Server missing ANTHROPIC_API_KEY" }), { status: 500 });
     const anthropic = new Anthropic({ apiKey: anthropicKey });
 
-    // Collect items from all docs
-    const extracted: Array<{ raw_text: string; qty: number | null; unit: string | null; unit_cost: number | null; total: number | null }> = [];
-    for (const d of docs) {
-      const { data: blob, error } = await supabase.storage.from("bids").download(d.storage_path);
-      if (error || !blob) continue;
-      const items = await parseFile(blob, d.storage_path);
-      for (const it of items) {
-        extracted.push({ raw_text: it.raw_text, qty: it.qty, unit: it.unit, unit_cost: it.unit_cost, total: it.total });
-        if (extracted.length >= 1200) break; // cap to control tokens
-      }
-      if (extracted.length >= 1200) break;
-    }
+    // Collect existing parsed items (require user to Process first for PDFs/CSVs/XLSX)
+    type DBItem = { raw_text: string | null; qty: number | null; unit: string | null; unit_cost: number | null; total: number | null };
+    const { data: existingItems } = await supabase
+      .from("line_items")
+      .select("raw_text, qty, unit, unit_cost, total")
+      .eq("bid_id", bidId)
+      .limit(2000);
+    const extracted: Array<{ raw_text: string; qty: number | null; unit: string | null; unit_cost: number | null; total: number | null }> = (existingItems as DBItem[] | null || []).map((it: DBItem) => ({
+      raw_text: it.raw_text ?? '',
+      qty: it.qty,
+      unit: it.unit,
+      unit_cost: it.unit_cost,
+      total: it.total,
+    }));
 
-    if (!extracted.length) return new Response(JSON.stringify({ error: "No parsable content found." }), { status: 400 });
+    if (!extracted.length) return new Response(JSON.stringify({ error: "No items to analyze. Click Process first, then try AI Level." }), { status: 400 });
 
     const examples = extracted.slice(0, 200).map((e) => ({ description: e.raw_text, qty: e.qty, unit: e.unit, unit_cost: e.unit_cost, total: e.total }));
 
