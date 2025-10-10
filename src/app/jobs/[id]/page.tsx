@@ -58,11 +58,22 @@ export default function JobDetailPage() {
 
   useEffect(() => {
     (async () => {
-      if (!selectedBidId) { setDocs([]); return; }
-      const { data } = await supabase.from("documents").select("id,storage_path,file_type,created_at").eq("bid_id", selectedBidId).order("created_at", { ascending: false });
+      if (!divisionCode) { setDocs([]); return; }
+      const { data: bidRows } = await supabase
+        .from("bids")
+        .select("id")
+        .eq("job_id", id)
+        .eq("division_code", divisionCode);
+      const ids = (bidRows || []).map((b: { id: string }) => b.id);
+      if (!ids.length) { setDocs([]); return; }
+      const { data } = await supabase
+        .from("documents")
+        .select("id,storage_path,file_type,created_at")
+        .in("bid_id", ids)
+        .order("created_at", { ascending: false });
       setDocs(data || []);
     })();
-  }, [selectedBidId, supabase]);
+  }, [divisionCode, id, supabase]);
 
   const createBid = async () => {
     setCreating(true); setError(null);
@@ -102,8 +113,11 @@ export default function JobDetailPage() {
     const uid = userData.user.id;
     for (const file of Array.from(files)) {
       if (file.size > 25 * 1024 * 1024) { setError(`File too large: ${file.name}`); continue; }
-      const safeName = file.name.replace(/[^a-zA-Z0-9_.-]/g, "_");
       const selectedBid = bids.find(b => b.id === selectedBidId);
+      const contractorName = selectedBid?.contractor_id ? (contractors[selectedBid.contractor_id]?.name || "Contractor") : "Contractor";
+      const prefix = contractorName.replace(/[^a-zA-Z0-9_.-]+/g, "_");
+      const safeTail = file.name.replace(/[^a-zA-Z0-9_.-]+/g, "_");
+      const safeName = `${prefix} ${safeTail}`;
       const divPart = selectedBid?.division_code ? `div-${selectedBid.division_code}/` : "";
       const path = `users/${uid}/jobs/${id}/${divPart}bids/${selectedBidId}/${Date.now()}-${safeName}`;
       const { error: upErr } = await supabase.storage.from("bids").upload(path, file, { upsert: false, contentType: file.type || "application/octet-stream" });
@@ -118,8 +132,24 @@ export default function JobDetailPage() {
       if (insErr) { setError(insErr.message); }
     }
     // Refresh docs list
-    const { data } = await supabase.from("documents").select("id,storage_path,file_type,created_at").eq("bid_id", selectedBidId).order("created_at", { ascending: false });
-    setDocs(data || []);
+    if (divisionCode) {
+      const { data: bidRows } = await supabase
+        .from("bids")
+        .select("id")
+        .eq("job_id", id)
+        .eq("division_code", divisionCode);
+      const ids = (bidRows || []).map((b: { id: string }) => b.id);
+      if (ids.length) {
+        const { data } = await supabase
+          .from("documents")
+          .select("id,storage_path,file_type,created_at")
+          .in("bid_id", ids)
+          .order("created_at", { ascending: false });
+        setDocs(data || []);
+      } else {
+        setDocs([]);
+      }
+    }
     setUploading(false);
   };
 
@@ -135,7 +165,21 @@ export default function JobDetailPage() {
   const title = useMemo(() => job ? `Job: ${job.name}` : "Loading job…", [job]);
 
   return (
-    <main className="p-6 space-y-6">
+    <main className="min-h-dvh flex">
+      <aside className="w-64 bg-black text-white p-4 space-y-3 hidden sm:block">
+        <h2 className="text-sm font-semibold uppercase tracking-wide">Select your CSI Division</h2>
+        <ul className="space-y-1 max-h-[80vh] overflow-auto pr-1">
+          {divisions.map(d => (
+            <li key={d.code}>
+              <button
+                className={`w-full text-left px-2 py-1 rounded ${divisionCode===d.code? 'bg-white text-black':'hover:bg-white/10'}`}
+                onClick={() => setDivisionCode(d.code)}
+              >{`Div ${d.code} — ${d.name}`}</button>
+            </li>
+          ))}
+        </ul>
+      </aside>
+      <div className="flex-1 p-6 space-y-6">
       <h1 className="text-2xl font-semibold">{title}</h1>
       {error && <p className="text-sm text-red-600">{error}</p>}
 
@@ -143,12 +187,14 @@ export default function JobDetailPage() {
         <h2 className="text-lg font-medium">Create a Bid</h2>
         <div className="flex gap-2 items-center">
           <input className="border rounded px-3 py-2" placeholder="Contractor name (optional)" value={newContractorName} onChange={(e) => setNewContractorName(e.target.value)} />
-          <select className="border rounded px-3 py-2 bg-white text-black" value={divisionCode} onChange={(e) => setDivisionCode(e.target.value)}>
-            <option value="">No CSI division</option>
-            {divisions.map(d => (
-              <option key={d.code} value={d.code}>{`Div ${d.code} — ${d.name}`}</option>
-            ))}
-          </select>
+          <div className="sm:hidden">
+            <select className="border rounded px-3 py-2 bg-white text-black" value={divisionCode} onChange={(e) => setDivisionCode(e.target.value)}>
+              <option value="">Select division…</option>
+              {divisions.map(d => (
+                <option key={d.code} value={d.code}>{`Div ${d.code} — ${d.name}`}</option>
+              ))}
+            </select>
+          </div>
           <button className="border rounded px-3 py-2 disabled:opacity-50" onClick={createBid} disabled={creating || !divisionCode}>{creating ? "Creating…" : "Create Bid"}</button>
         </div>
       </section>
@@ -210,7 +256,7 @@ export default function JobDetailPage() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-lg font-medium">Documents</h2>
+        <h2 className="text-lg font-medium">Documents (division bucket)</h2>
         <ul className="space-y-2">
           {docs.map(d => (
             <li key={d.id} className="border rounded p-2 text-sm flex items-center justify-between gap-4">
@@ -251,6 +297,7 @@ export default function JobDetailPage() {
           <button className="border rounded px-3 py-1 disabled:opacity-50" disabled={!divisionCode} onClick={() => divisionCode && (window.location.href = `/jobs/${id}/division/${divisionCode}/report`)}>View Bid Level</button>
         </div>
       </section>
+      </div>
     </main>
   );
 }
