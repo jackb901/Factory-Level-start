@@ -8,7 +8,7 @@ import { log } from "@/lib/logger";
 type Job = { id: string; name: string; created_at: string };
 type Bid = { id: string; contractor_id: string | null; division_code: string | null; created_at: string };
 type Contractor = { id: string; name: string };
-type Document = { id: string; storage_path: string; file_type: string; created_at: string };
+type Document = { id: string; bid_id: string; storage_path: string; file_type: string; created_at: string };
 type Division = { code: string; name: string };
 
 export default function JobDetailPage() {
@@ -79,7 +79,7 @@ export default function JobDetailPage() {
       if (!ids.length) { setDocs([]); return; }
       const { data } = await supabase
         .from("documents")
-        .select("id,storage_path,file_type,created_at")
+        .select("id,bid_id,storage_path,file_type,created_at")
         .in("bid_id", ids)
         .order("created_at", { ascending: false });
       setDocs(data || []);
@@ -113,7 +113,6 @@ export default function JobDetailPage() {
     setSelectedBidId((bid as Bid).id);
     setNewContractorName("");
     setCreating(false);
-    setDivisionCode("");
   };
 
   const uploadFiles = async (files: FileList | null) => {
@@ -125,8 +124,14 @@ export default function JobDetailPage() {
     for (const file of Array.from(files)) {
       if (file.size > 25 * 1024 * 1024) { setError(`File too large: ${file.name}`); continue; }
       const selectedBid = bids.find(b => b.id === selectedBidId);
-      const contractorName = selectedBid?.contractor_id ? (contractors[selectedBid.contractor_id]?.name || "Contractor") : "Contractor";
-      const prefix = contractorName.replace(/[^a-zA-Z0-9_.-]+/g, "_");
+      let prefix: string;
+      if (selectedBid?.contractor_id) {
+        const contractorName = contractors[selectedBid.contractor_id]?.name || "Contractor";
+        prefix = contractorName.replace(/[^a-zA-Z0-9_.-]+/g, "_");
+      } else {
+        const base = file.name.replace(/\.[^/.]+$/, "");
+        prefix = (base.slice(0, 10) || "file").replace(/[^a-zA-Z0-9_.-]+/g, "_");
+      }
       const safeTail = file.name.replace(/[^a-zA-Z0-9_.-]+/g, "_");
       const safeName = `${prefix} ${safeTail}`;
       const divPart = selectedBid?.division_code ? `div-${selectedBid.division_code}/` : "";
@@ -153,7 +158,7 @@ export default function JobDetailPage() {
       if (ids.length) {
         const { data } = await supabase
           .from("documents")
-          .select("id,storage_path,file_type,created_at")
+          .select("id,bid_id,storage_path,file_type,created_at")
           .in("bid_id", ids)
           .order("created_at", { ascending: false });
         setDocs(data || []);
@@ -234,7 +239,17 @@ export default function JobDetailPage() {
           {docs.map(d => (
             <li key={d.id} className="border rounded p-2 text-sm flex items-center justify-between gap-4">
               <div className="flex flex-col">
-                <span>{d.file_type}</span>
+                <span>{(() => {
+                  const bid = bids.find(b => b.id === d.bid_id);
+                  if (bid?.contractor_id) {
+                    return contractors[bid.contractor_id!]?.name || "Contractor";
+                  }
+                  const parts = d.storage_path.split("/");
+                  const fname = parts[parts.length - 1] || "";
+                  const afterDash = fname.includes("-") ? fname.substring(fname.indexOf("-") + 1) : fname;
+                  const base = afterDash.replace(/\.[^/.]+$/, "");
+                  return base.slice(0, 10);
+                })()}</span>
                 <span className="text-gray-500">{new Date(d.created_at).toLocaleString()}</span>
               </div>
               {/* Processing removed in favor of AI division-level leveleing */}
