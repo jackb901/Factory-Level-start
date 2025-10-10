@@ -42,10 +42,10 @@ export default function DashboardPage() {
 
   const gridJobs = useMemo(() => jobs, [jobs]);
 
-  if (loading) return <main className="p-6">Loading…</main>;
+  if (loading) return <main className="min-h-dvh p-6 bg-[#0a2540] text-white">Loading…</main>;
 
   return (
-    <main className="p-6 space-y-6">
+    <main className="min-h-dvh bg-[#0a2540] text-white p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">{userName}&apos;s Dashboard</h1>
         <button
@@ -69,7 +69,7 @@ export default function DashboardPage() {
           {gridJobs.map((j, idx) => (
             <div
               key={j.id}
-              className="border rounded-lg p-4 text-center bg-white cursor-move select-none"
+              className="border rounded-lg p-4 text-center bg-white text-black cursor-move select-none"
               draggable
               onDragStart={() => setDragIndex(idx)}
               onDragOver={(e) => e.preventDefault()}

@@ -25,6 +25,16 @@ export default function JobDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [divisions, setDivisions] = useState<Division[]>([]);
   const [divisionCode, setDivisionCode] = useState<string>("");
+  // Reset selected bid if it doesn't belong to the selected division
+  useEffect(() => {
+    if (!divisionCode) { setSelectedBidId(null); return; }
+    if (selectedBidId) {
+      const b = bids.find(x => x.id === selectedBidId);
+      if (!b || b.division_code !== divisionCode) {
+        setSelectedBidId(null);
+      }
+    }
+  }, [divisionCode, bids, selectedBidId]);
 
   useEffect(() => {
     (async () => {
@@ -165,9 +175,9 @@ export default function JobDetailPage() {
   const title = useMemo(() => job ? `Job: ${job.name}` : "Loading job…", [job]);
 
   return (
-    <main className="min-h-dvh flex">
+    <main className="min-h-dvh flex bg-[#0a2540] text-white">
       <aside className="w-64 bg-black text-white p-4 space-y-3 hidden sm:block">
-        <h2 className="text-sm font-semibold uppercase tracking-wide">Select your CSI Division</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-wide">CSI Division</h2>
         <ul className="space-y-1 max-h-[80vh] overflow-auto pr-1">
           {divisions.map(d => (
             <li key={d.code}>
@@ -201,9 +211,9 @@ export default function JobDetailPage() {
 
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Bids</h2>
-        <select className="border rounded px-3 py-2 bg-white text-black" value={selectedBidId || ""} onChange={(e) => setSelectedBidId(e.target.value || null)}>
+        <select className="border rounded px-3 py-2 bg-white text-black" value={selectedBidId || ""} onChange={(e) => setSelectedBidId(e.target.value || null)} disabled={!divisionCode}>
           <option value="">Select a bid…</option>
-          {bids.map(b => (
+          {bids.filter(b => b.division_code === divisionCode).map(b => (
             <option className="text-black" key={b.id} value={b.id}>
               {new Date(b.created_at).toLocaleString()} — {contractorLabel(b)} — {divisionLabel(b.division_code)}
             </option>
