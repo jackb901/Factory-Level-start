@@ -22,6 +22,7 @@ export default function JobDetailPage() {
   const [newContractorName, setNewContractorName] = useState("");
   const [creating, setCreating] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [runningLevelStart, setRunningLevelStart] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [divisions, setDivisions] = useState<Division[]>([]);
   const [divisionCode, setDivisionCode] = useState<string>("");
@@ -219,44 +220,6 @@ export default function JobDetailPage() {
             </option>
           ))}
         </select>
-        <div className="space-x-2">
-          <button
-            className="border rounded px-3 py-1 disabled:opacity-50"
-            disabled={!selectedBidId}
-            onClick={() => selectedBidId && (window.location.href = `/jobs/${id}/bids/${selectedBidId}/items`)}
-          >
-            View Items
-          </button>
-          <button
-            className="border rounded px-3 py-1"
-            onClick={() => (window.location.href = `/jobs/${id}/compare`)}
-          >
-            Compare
-          </button>
-          <button
-            className="border rounded px-3 py-1 disabled:opacity-50"
-            disabled={!selectedBidId}
-            onClick={async () => {
-              if (!selectedBidId) return;
-              const { data: session } = await supabase.auth.getSession();
-              const token = session.session?.access_token;
-              if (!token) { setError('Missing session'); return; }
-              const res = await fetch('/api/ai/level', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ bidId: selectedBidId }),
-              });
-              if (!res.ok) {
-                const t = await res.text();
-                setError(`AI leveling failed: ${t}`);
-                return;
-              }
-              window.location.href = `/jobs/${id}/bids/${selectedBidId}/items`;
-            }}
-          >
-            AI Level
-          </button>
-        </div>
       </section>
 
       <section className="space-y-3">
@@ -279,33 +242,22 @@ export default function JobDetailPage() {
           ))}
           {!docs.length && <li className="text-sm text-gray-600">No documents uploaded yet.</li>}
         </ul>
-      </section>
-
-      <section className="space-y-3">
-        <h2 className="text-lg font-medium">AI Bid Level (by division)</h2>
-        <div className="flex gap-2 items-center">
-          <select className="border rounded px-3 py-2 bg-white text-black" value={divisionCode} onChange={(e) => setDivisionCode(e.target.value)}>
-            <option value="">Select division…</option>
-            {divisions.map(d => (
-              <option key={d.code} value={d.code}>{`Div ${d.code} — ${d.name}`}</option>
-            ))}
-          </select>
-          <button
-            className="border rounded px-3 py-1 disabled:opacity-50"
-            disabled={!divisionCode}
-            onClick={async () => {
-              const { data: session } = await supabase.auth.getSession();
-              const token = session.session?.access_token; if (!token) { setError('Missing session'); return; }
-              const res = await fetch('/api/ai/level-division', {
-                method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ jobId: id, division: divisionCode })
-              });
-              if (!res.ok) { setError(`AI division level failed`); return; }
-              window.location.href = `/jobs/${id}/division/${divisionCode}/report`;
-            }}
-          >Run AI Bid Level</button>
-          <button className="border rounded px-3 py-1 disabled:opacity-50" disabled={!divisionCode} onClick={() => divisionCode && (window.location.href = `/jobs/${id}/division/${divisionCode}/report`)}>View Bid Level</button>
-        </div>
+        <button
+          className="block mx-auto mt-4 w-full sm:w-1/2 rounded-lg bg-neutral-700 text-white px-6 py-3 text-center shadow transition hover:bg-neutral-600 active:translate-y-[1px] active:shadow-inner disabled:opacity-50"
+          disabled={!divisionCode || runningLevelStart}
+          onClick={async () => {
+            if (!divisionCode) return;
+            setRunningLevelStart(true); setError(null);
+            const { data: session } = await supabase.auth.getSession();
+            const token = session.session?.access_token; if (!token) { setError('Missing session'); setRunningLevelStart(false); return; }
+            const res = await fetch('/api/ai/level-division', {
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+              body: JSON.stringify({ jobId: id, division: divisionCode })
+            });
+            if (!res.ok) { setError('LevelStart failed'); setRunningLevelStart(false); return; }
+            window.location.href = `/jobs/${id}/division/${divisionCode}/report`;
+          }}
+        >Run LevelStart</button>
       </section>
       </div>
     </main>
