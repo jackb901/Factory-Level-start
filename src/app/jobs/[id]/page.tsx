@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { log } from "@/lib/logger";
@@ -201,7 +201,7 @@ export default function JobDetailPage() {
     return d ? `Div ${d.code} - ${d.name}` : `Div ${code}`;
   };
 
-  const title = useMemo(() => job ? `Job: ${job.name}` : "Loading job…", [job]);
+  // Title is rendered inline to allow linking "Job" back to dashboard
 
   return (
     <main className="min-h-dvh flex bg-[#0a2540] text-white">
@@ -292,7 +292,13 @@ export default function JobDetailPage() {
         </ul>
       </aside>
       <div className="flex-1 p-6 space-y-6">
-      <h1 className="text-2xl font-semibold">{title}</h1>
+      {job ? (
+        <h1 className="text-2xl font-semibold">
+          <a href="/dashboard" className="underline hover:opacity-80">Job</a>: {job.name}
+        </h1>
+      ) : (
+        <h1 className="text-2xl font-semibold">Loading job…</h1>
+      )}
       {error && <p className="text-sm text-red-600">{error}</p>}
 
       <section className="space-y-3">
