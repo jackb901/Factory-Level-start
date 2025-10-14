@@ -30,8 +30,9 @@ export default function JobDetailPage() {
   const [subDivisions, setSubDivisions] = useState<Record<string, SubDivision[]>>({});
   const [selectedSubdivisionId, setSelectedSubdivisionId] = useState<string | null>(null);
   const [creatingSubFor, setCreatingSubFor] = useState<string | null>(null);
-  const [newSubName, setNewSubName] = useState<string>("");
+  const [, setNewSubName] = useState<string>("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [subInputFor, setSubInputFor] = useState<string | null>(null);
   // Reset selected bid if it doesn't belong to the selected node
   useEffect(() => {
     if (!divisionCode && !selectedSubdivisionId) { setSelectedBidId(null); return; }
@@ -229,13 +230,11 @@ export default function JobDetailPage() {
                     {creatingSubFor === d.code && (
                       <div className="absolute right-0 mt-1 bg-white text-black rounded shadow">
                         <button className="px-3 py-1 hover:bg-gray-100 w-full text-left" onClick={() => {
-                          setNewSubName("");
-                          // reveal input below
                           setCollapsed(prev => ({...prev, [d.code]: false}));
                           setCreatingSubFor(null);
                           setSelectedSubdivisionId(null);
-                          // set a marker in state by using newSubName with a sentinel, handled below
-                          setNewSubName("__START_INPUT__" as unknown as string);
+                          setNewSubName("");
+                          setSubInputFor(d.code);
                         }}>Create sub division</button>
                       </div>
                     )}
@@ -244,17 +243,17 @@ export default function JobDetailPage() {
                 {!isCollapsed && (
                   <ul className="ml-5 mt-1 space-y-1">
                     {/* inline input for new sub division */}
-                    {newSubName === ('__START_INPUT__' as unknown as string) && (
+                    {subInputFor === d.code && (
                       <li>
                         <input
                           autoFocus
-                          className="w-full px-2 py-1 rounded bg-white text-black"
+                          className="w-11/12 px-2 py-1 rounded border bg-white text-black"
                           placeholder="Sub division name"
-                          onBlur={() => setNewSubName("")}
+                          onBlur={() => { setSubInputFor(null); setNewSubName(""); }}
                           onKeyDown={async (e) => {
                             if (e.key === 'Enter') {
                               const name = (e.target as HTMLInputElement).value.trim();
-                              if (!name) { setNewSubName(""); return; }
+                              if (!name) { setSubInputFor(null); setNewSubName(""); return; }
                               const { data: userData } = await supabase.auth.getUser();
                               if (!userData.user) { window.location.href = '/login'; return; }
                               const { data, error } = await supabase.from('job_subdivisions').insert({
@@ -264,8 +263,13 @@ export default function JobDetailPage() {
                                 name,
                               }).select('id,parent_code,name,created_at').single();
                               if (!error && data) {
-                                setSubDivisions(prev => ({...prev, [d.code]: [...(prev[d.code]||[]), data as SubDivision]}));
+                                const created = data as SubDivision;
+                                setSubDivisions(prev => ({...prev, [d.code]: [...(prev[d.code]||[]), created]}));
+                                setCollapsed(prev => ({...prev, [d.code]: false}));
+                                setSubInputFor(null);
                                 setNewSubName("");
+                                setSelectedSubdivisionId(created.id);
+                                setDivisionCode(d.code);
                               }
                             }
                           }}
