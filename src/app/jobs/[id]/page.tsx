@@ -369,7 +369,7 @@ export default function JobDetailPage() {
             const token = session.session?.access_token; if (!token) { setError('Missing session'); setRunningLevelStart(false); return; }
             const res = await fetch('/api/ai/level-division', {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-              body: JSON.stringify({ jobId: id, division: divisionCode })
+              body: JSON.stringify({ jobId: id, division: divisionCode || null, subdivisionId: selectedSubdivisionId || null })
             });
             if (!res.ok) { setError('LevelStart failed'); setRunningLevelStart(false); return; }
             window.location.href = `/jobs/${id}/division/${divisionCode}/report`;

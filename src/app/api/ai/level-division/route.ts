@@ -8,16 +8,17 @@ export const runtime = 'nodejs';
 
 type Report = {
   division_code: string | null;
+  subdivision_id?: string | null;
   contractors: Array<{ contractor_id: string | null; name: string; total?: number | null }>;
   scope_items: string[];
   matrix: Record<string, Record<string, { status: "included" | "excluded" | "not_specified"; price?: number | null }>>;
-  qualifications: Record<string, { includes: string[]; excludes: string[]; allowances: string[]; alternates: string[]; payment_terms?: string[] }>;
-  recommendation?: string;
+  qualifications: Record<string, { includes: string[]; excludes: string[]; allowances: string[]; alternates: string[]; payment_terms?: string[]; fine_print?: string[] }>;
+  recommendation?: { selected_contractor_id?: string | null; rationale?: string; next_steps?: string } | string;
 };
 
 export async function POST(req: NextRequest) {
   try {
-    const { jobId, division } = await req.json().catch(() => ({} as { jobId?: string; division?: string }));
+    const { jobId, division, subdivisionId } = await req.json().catch(() => ({} as { jobId?: string; division?: string; subdivisionId?: string }));
     if (!jobId) return new Response(JSON.stringify({ error: "Missing jobId" }), { status: 400 });
 
     const auth = req.headers.get("authorization") || req.headers.get("Authorization");
@@ -25,11 +26,16 @@ export async function POST(req: NextRequest) {
 
     const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { global: { headers: { Authorization: auth } } });
 
-    const { data: bids } = await supabase
+    let bidsQuery = supabase
       .from('bids')
-      .select('id, user_id, contractor_id, job_id, division_code')
-      .eq('job_id', jobId)
-      .eq('division_code', division || null);
+      .select('id, user_id, contractor_id, job_id, division_code, subdivision_id')
+      .eq('job_id', jobId);
+    if (subdivisionId) {
+      bidsQuery = bidsQuery.eq('subdivision_id', subdivisionId);
+    } else {
+      bidsQuery = bidsQuery.eq('division_code', division || null).is('subdivision_id', null);
+    }
+    const { data: bids } = await bidsQuery;
     const bidList = bids || [];
     if (!bidList.length) return new Response(JSON.stringify({ error: "No bids found for this division." }), { status: 404 });
 
@@ -66,22 +72,23 @@ export async function POST(req: NextRequest) {
       items: (byBid[b.id] || []).slice(0, 300)
     }));
 
-    const system = `You are a seasoned Construction Executive performing bid leveling for a single CSI division. You must:
+    const system = `You are a seasoned Construction Executive performing bid leveling for a single CSI division (or a sub-division). You must:
 - Build a comprehensive list of scope items from all bids' content.
 - For each contractor, mark each scope item as included, excluded, or not_specified; include priced amounts when present.
-- Summarize qualifications: includes, excludes, allowances, alternates, payment terms.
-- Provide a brief recommendation.
+- Summarize qualifications: includes, excludes, allowances, alternates, payment terms, and any pertinent fine print.
+- Provide a brief recommendation (selected contractor, rationale, next steps).
 Output strict JSON only.`;
 
     const userMsg = {
       role: 'user' as const,
-      content: [{ type: 'text' as const, text: `Division: ${division || ''}\nBids: ${JSON.stringify(promptPayload).slice(0, 20000)}\n\nDesired JSON format:\n${JSON.stringify({
+      content: [{ type: 'text' as const, text: `Division: ${division || ''}${subdivisionId ? `\nSubdivision: ${subdivisionId}` : ''}\nBids: ${JSON.stringify(promptPayload).slice(0, 20000)}\n\nDesired JSON format:\n${JSON.stringify({
         division_code: division || null,
+        subdivision_id: subdivisionId || null,
         contractors: [{ contractor_id: '...', name: '...', total: 0 }],
         scope_items: ['...'],
         matrix: { '<scope>': { '<contractor_id>': { status: 'included', price: 0 } } },
-        qualifications: { '<contractor_id>': { includes: [], excludes: [], allowances: [], alternates: [], payment_terms: [] } },
-        recommendation: '...'
+        qualifications: { '<contractor_id>': { includes: [], excludes: [], allowances: [], alternates: [], payment_terms: [], fine_print: [] } },
+        recommendation: { selected_contractor_id: '...', rationale: '...', next_steps: '...' }
       }, null, 2)}` }]
     };
 
@@ -100,7 +107,7 @@ Output strict JSON only.`;
     // Persist report
     const { data: user } = await supabase.auth.getUser();
     const userId = user.user?.id;
-    await supabase.from('bid_level_reports').insert({ user_id: userId, job_id: jobId, division_code: division || null, report: parsed });
+    await supabase.from('bid_level_reports').insert({ user_id: userId, job_id: jobId, division_code: division || null, subdivision_id: subdivisionId || null, report: parsed });
 
     return new Response(JSON.stringify({ ok: true, scope_count: parsed.scope_items?.length || 0 }), { status: 200 });
   } catch (e) {
