@@ -35,9 +35,10 @@ export async function POST(req: NextRequest) {
     } else {
       bidsQuery = bidsQuery.eq('division_code', division || null).is('subdivision_id', null);
     }
-    const { data: bids } = await bidsQuery;
+    const { data: bids, error: bidsErr } = await bidsQuery;
+    if (bidsErr) return new Response(JSON.stringify({ error: `DB error loading bids: ${bidsErr.message}` }), { status: 500 });
     const bidList = bids || [];
-    if (!bidList.length) return new Response(JSON.stringify({ error: "No bids found for this division." }), { status: 404 });
+    if (!bidList.length) return new Response(JSON.stringify({ error: `No bids found for ${subdivisionId ? `subdivision ${subdivisionId}` : `division ${division || '(none)'}`}. Create bids and upload documents first.` }), { status: 404 });
 
     const contractorIds = Array.from(new Set(bidList.map(b => b.contractor_id).filter(Boolean))) as string[];
     const contractors: Record<string, string> = {};
@@ -48,10 +49,15 @@ export async function POST(req: NextRequest) {
 
     const byBid: Record<string, ExtractedItem[]> = {};
     for (const b of bidList) {
-      const { data: docs } = await supabase.from('documents').select('storage_path').eq('bid_id', b.id);
+      const { data: docs, error: docsErr } = await supabase.from('documents').select('storage_path').eq('bid_id', b.id);
+      if (docsErr) return new Response(JSON.stringify({ error: `DB error loading documents: ${docsErr.message}` }), { status: 500 });
       const items: ExtractedItem[] = [];
       for (const d of (docs || [])) {
-        const { data: blob } = await supabase.storage.from('bids').download(d.storage_path);
+        const { data: blob, error: dlErr } = await supabase.storage.from('bids').download(d.storage_path);
+        if (dlErr) {
+          // Skip unreadable files but continue
+          continue;
+        }
         if (!blob) continue;
         const buf = await blob.arrayBuffer();
         const ex = await extractFromBuffer(d.storage_path, buf);
@@ -59,6 +65,11 @@ export async function POST(req: NextRequest) {
         if (items.length >= 1500) break;
       }
       byBid[b.id] = items;
+    }
+
+    const totalExtracted = Object.values(byBid).reduce((n, arr) => n + (arr?.length || 0), 0);
+    if (totalExtracted === 0) {
+      return new Response(JSON.stringify({ error: "No readable content extracted from documents. Ensure files are PDF/CSV/XLS/XLSX and not password-protected or scanned-only images." }), { status: 400 });
     }
 
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
@@ -92,7 +103,13 @@ Output strict JSON only.`;
       }, null, 2)}` }]
     };
 
-    const resp = await anthropic.messages.create({ model: 'claude-3-5-sonnet-20241022', max_tokens: 4000, temperature: 0.2, system, messages: [userMsg] });
+    let resp;
+    try {
+      resp = await anthropic.messages.create({ model: 'claude-3-5-sonnet-20241022', max_tokens: 4000, temperature: 0.2, system, messages: [userMsg] });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return new Response(JSON.stringify({ error: `Claude request failed: ${msg}` }), { status: 502 });
+    }
     const block = Array.isArray(resp.content)
       ? (resp.content.find((b: unknown) => {
           if (typeof b !== 'object' || b === null) return false;
@@ -102,12 +119,15 @@ Output strict JSON only.`;
       : undefined;
     const content = block?.text || '{}';
     let parsed: Report;
-    try { parsed = JSON.parse(content) as Report; } catch { return new Response(JSON.stringify({ error: 'AI returned invalid JSON' }), { status: 502 }); }
+    try { parsed = JSON.parse(content) as Report; } catch {
+      return new Response(JSON.stringify({ error: 'AI returned invalid JSON', preview: content.slice(0, 800) }), { status: 502 });
+    }
 
     // Persist report
     const { data: user } = await supabase.auth.getUser();
     const userId = user.user?.id;
-    await supabase.from('bid_level_reports').insert({ user_id: userId, job_id: jobId, division_code: division || null, subdivision_id: subdivisionId || null, report: parsed });
+    const { error: insErr } = await supabase.from('bid_level_reports').insert({ user_id: userId, job_id: jobId, division_code: division || null, subdivision_id: subdivisionId || null, report: parsed });
+    if (insErr) return new Response(JSON.stringify({ error: `Failed to store report: ${insErr.message}` }), { status: 500 });
 
     return new Response(JSON.stringify({ ok: true, scope_count: parsed.scope_items?.length || 0 }), { status: 200 });
   } catch (e) {

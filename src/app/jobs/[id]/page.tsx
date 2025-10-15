@@ -371,7 +371,12 @@ export default function JobDetailPage() {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
               body: JSON.stringify({ jobId: id, division: divisionCode || null, subdivisionId: selectedSubdivisionId || null })
             });
-            if (!res.ok) { setError('LevelStart failed'); setRunningLevelStart(false); return; }
+            if (!res.ok) {
+              const t = await res.text().catch(()=>'');
+              setError(`LevelStart failed: ${t}`);
+              setRunningLevelStart(false);
+              return;
+            }
             window.location.href = `/jobs/${id}/division/${divisionCode}/report`;
           }}
         >Run LevelStart</button>
