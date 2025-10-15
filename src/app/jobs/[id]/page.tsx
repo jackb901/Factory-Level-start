@@ -372,8 +372,19 @@ export default function JobDetailPage() {
               body: JSON.stringify({ jobId: id, division: divisionCode || null, subdivisionId: selectedSubdivisionId || null })
             });
             if (!res.ok) {
-              const t = await res.text().catch(()=>'');
-              setError(`LevelStart failed: ${t}`);
+              let details = '';
+              try {
+                const txt = await res.text();
+                if (txt) {
+                  try {
+                    const j = JSON.parse(txt);
+                    details = j.error || j.preview || txt;
+                  } catch {
+                    details = txt;
+                  }
+                }
+              } catch {}
+              setError(`LevelStart failed (HTTP ${res.status} ${res.statusText}): ${details}`);
               setRunningLevelStart(false);
               return;
             }
