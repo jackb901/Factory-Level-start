@@ -1,6 +1,5 @@
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
-import { pdf as pdfParse } from 'pdf-parse';
 
 export type ExtractedItem = {
   raw_text: string;
@@ -71,6 +70,17 @@ export async function extractFromBuffer(name: string, buf: ArrayBuffer): Promise
     return out;
   }
   if (lower.endsWith('.pdf')) {
+    // Ensure DOMMatrix exists for pdfjs in Node
+    if (typeof (globalThis as unknown as { DOMMatrix?: unknown }).DOMMatrix === 'undefined') {
+      try {
+        const dm: unknown = await import('dommatrix');
+        const anyDm = dm as { DOMMatrix?: unknown; default?: unknown };
+        (globalThis as unknown as { DOMMatrix?: unknown }).DOMMatrix = anyDm.DOMMatrix ?? anyDm.default ?? dm;
+      } catch {
+        // best-effort; if missing, pdf-parse may throw and the caller will surface a clear error
+      }
+    }
+    const { pdf: pdfParse } = await import('pdf-parse');
     const data = await pdfParse(Buffer.from(buf));
     const lines = (data.text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean).slice(0, 5000);
     return lines.map(l => ({ raw_text: l, qty: null, unit: null, unit_cost: null, total: null })).slice(0, 1500);
