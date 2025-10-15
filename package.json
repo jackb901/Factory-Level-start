@@ -11,7 +11,6 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",
     "@supabase/supabase-js": "^2.58.0",
-    "dommatrix": "^2.0.1",
     "next": "15.5.4",
     "papaparse": "^5.5.3",
     "pdf-parse": "^2.2.2",

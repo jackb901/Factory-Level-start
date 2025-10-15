@@ -70,15 +70,21 @@ export async function extractFromBuffer(name: string, buf: ArrayBuffer): Promise
     return out;
   }
   if (lower.endsWith('.pdf')) {
-    // Ensure DOMMatrix exists for pdfjs in Node
-    if (typeof (globalThis as unknown as { DOMMatrix?: unknown }).DOMMatrix === 'undefined') {
-      try {
-        const dm: unknown = await import('dommatrix');
-        const anyDm = dm as { DOMMatrix?: unknown; default?: unknown };
-        (globalThis as unknown as { DOMMatrix?: unknown }).DOMMatrix = anyDm.DOMMatrix ?? anyDm.default ?? dm;
-      } catch {
-        // best-effort; if missing, pdf-parse may throw and the caller will surface a clear error
+    // Ensure DOMMatrix exists for pdfjs in Node (minimal stub)
+    const g = globalThis as unknown as { DOMMatrix?: unknown };
+    if (typeof g.DOMMatrix === 'undefined') {
+      class DOMMatrixStub {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        constructor(_init?: unknown) {}
+        multiplySelf() { return this; }
+        multiply() { return this; }
+        invertSelf() { return this; }
+        translateSelf() { return this; }
+        scaleSelf() { return this; }
+        rotateSelf() { return this; }
+        toFloat32Array() { return new Float32Array(16); }
       }
+      g.DOMMatrix = DOMMatrixStub;
     }
     const { pdf: pdfParse } = await import('pdf-parse');
     const data = await pdfParse(Buffer.from(buf));
