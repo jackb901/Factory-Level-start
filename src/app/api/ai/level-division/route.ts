@@ -1,8 +1,6 @@
 import { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import Anthropic from "@anthropic-ai/sdk";
-import { extractFromBuffer, type ExtractedItem } from "@/lib/serverExtract";
 
 export const dynamic = "force-dynamic";
 export const runtime = 'nodejs';
@@ -19,6 +17,10 @@ type Report = {
 
 export async function POST(req: NextRequest) {
   try {
+    // Lazy-load heavy dependencies to prevent module init issues on GET/OPTIONS
+    const { default: Anthropic } = await import("@anthropic-ai/sdk");
+    const { extractFromBuffer } = await import("@/lib/serverExtract");
+    type ExtractedItem = { raw_text: string; qty: number | null; unit: string | null; unit_cost: number | null; total: number | null };
     const { jobId, division, subdivisionId } = await req.json().catch(() => ({} as { jobId?: string; division?: string; subdivisionId?: string }));
     if (!jobId) return new Response(JSON.stringify({ error: "Missing jobId" }), { status: 400 });
 
