@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import Anthropic from "@anthropic-ai/sdk";
 import { extractFromBuffer, type ExtractedItem } from "@/lib/serverExtract";
@@ -134,4 +135,20 @@ Output strict JSON only.`;
     const msg = e instanceof Error ? e.message : 'Unknown error';
     return new Response(JSON.stringify({ error: msg }), { status: 500 });
   }
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Allow': 'POST, OPTIONS'
+    }
+  });
+}
+
+export async function GET() {
+  return NextResponse.json({ ok: false, error: 'Use POST' }, { status: 405, headers: { 'Allow': 'POST, OPTIONS' } });
 }
