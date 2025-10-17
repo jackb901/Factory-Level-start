@@ -367,28 +367,27 @@ export default function JobDetailPage() {
             setRunningLevelStart(true); setError(null);
             const { data: session } = await supabase.auth.getSession();
             const token = session.session?.access_token; if (!token) { setError('Missing session'); setRunningLevelStart(false); return; }
-            const res = await fetch('/api/ai/level-division', {
+            // enqueue job via queue API
+            const q = await fetch('/api/level/start', {
               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
               body: JSON.stringify({ jobId: id, division: divisionCode || null, subdivisionId: selectedSubdivisionId || null })
             });
-            if (!res.ok) {
-              let details = '';
-              try {
-                const txt = await res.text();
-                if (txt) {
-                  try {
-                    const j = JSON.parse(txt);
-                    details = j.error || j.preview || txt;
-                  } catch {
-                    details = txt;
-                  }
-                }
-              } catch {}
-              setError(`LevelStart failed (HTTP ${res.status} ${res.statusText}): ${details}`);
-              setRunningLevelStart(false);
-              return;
-            }
-            window.location.href = `/jobs/${id}/division/${divisionCode}/report`;
+            if (!q.ok) { const t = await q.text(); setError(`Queue failed (${q.status}): ${t}`); setRunningLevelStart(false); return; }
+            const { job_id } = await q.json();
+            // poll status and trigger worker
+            let tries = 0;
+            const poll = async (): Promise<void> => {
+              if (tries++ > 240) { setError('Timeout waiting for result'); setRunningLevelStart(false); return; }
+              await fetch('/api/level/worker', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } }).catch(()=>{});
+              const st = await fetch(`/api/level/status?id=${encodeURIComponent(job_id)}`, { headers: { 'Authorization': `Bearer ${token}` } });
+              if (!st.ok) { setTimeout(poll, 1500); return; }
+              const js = await st.json();
+              const s = js?.job?.status as string | undefined;
+              if (s === 'success') { window.location.href = `/jobs/${id}/division/${divisionCode}/report`; return; }
+              if (s === 'failed') { setError(js?.job?.error || 'Job failed'); setRunningLevelStart(false); return; }
+              setTimeout(poll, 1500);
+            };
+            poll();
           }}
         >Run LevelStart</button>
       </section>
