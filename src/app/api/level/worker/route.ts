@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
     csvPerSheet: 50_000,
     perBid: 600_000,
     maxContractors: 5,
-    batchSize: 2,
+    batchSize: 1,
     maxDocsPerBid: 4
   } as const;
 
@@ -170,12 +170,28 @@ export async function POST(req: NextRequest) {
 Build a comprehensive list of scope items. For each contractor, mark each scope item as included, excluded, or not_specified; include priced amounts when present.
 Summarize qualifications: includes, excludes, allowances, alternates, payment terms, fine print. Provide a brief recommendation. Output strict JSON only.`;
 
-    const callClaude = async () => {
-      return anthropic.messages.create({ model: 'claude-3-5-sonnet-20241022', max_tokens: 3200, temperature: 0.2, system, messages: [{ role: 'user', content }] });
+    const callClaudeWithRetry = async (tries = 4) => {
+      let attempt = 0;
+      while (attempt < tries) {
+        try {
+          return await anthropic.messages.create({ model: 'claude-3-5-sonnet-20241022', max_tokens: 2800, temperature: 0.2, system, messages: [{ role: 'user', content }] });
+        } catch (e) {
+          const msg = (e as Error).message || '';
+          // backoff on rate limit
+          if (/429|rate_limit/i.test(msg) && attempt < tries - 1) {
+            const delay = Math.min(15000, 3000 * Math.pow(2, attempt));
+            await new Promise(r => setTimeout(r, delay + Math.floor(Math.random()*500)));
+            attempt += 1;
+            continue;
+          }
+          throw e;
+        }
+      }
+      throw new Error('Claude request failed after retries');
     };
     let resp;
     try {
-      resp = await callClaude();
+      resp = await callClaudeWithRetry();
     } catch (e) {
       await supabase.from('processing_jobs').update({ status: 'failed', error: (e as Error).message, finished_at: new Date().toISOString() }).eq('id', job.id);
       return NextResponse.json({ error: (e as Error).message }, { status: 502 });
@@ -187,7 +203,8 @@ Summarize qualifications: includes, excludes, allowances, alternates, payment te
     merged = merged ? mergeReports(merged, parsed) : parsed;
     done += 1;
     await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(95, Math.round((done / batches.length) * 90) + 5) }).eq('id', job.id);
-    await new Promise(r => setTimeout(r, 500));
+    // small inter-batch delay to avoid acceleration limits
+    await new Promise(r => setTimeout(r, 1500));
   }
 
   if (!merged) {
