@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import type { ContentBlockParam, DocumentBlockParam, TextBlockParam, Base64PDFSource } from "@anthropic-ai/sdk/resources/messages/messages";
 
 export const dynamic = "force-dynamic";
 export const runtime = 'nodejs';
@@ -149,16 +150,20 @@ export async function POST(req: NextRequest) {
   let merged: Report | null = null;
   let done = 0;
   for (const batch of batches) {
-    const content: Array<{ type: 'text' | 'document'; text?: string; source?: { type: 'base64'; media_type: string; data: string } }> = [];
+    const content: ContentBlockParam[] = [];
     for (const b of batch) {
       const contractorName = b.contractor_id ? (contractorsMap[b.contractor_id] || 'Contractor') : 'Contractor';
-      content.push({ type: 'text', text: `--- Contractor: ${contractorName} (bid ${b.id}) ---` });
+      const txt: TextBlockParam = { type: 'text', text: `--- Contractor: ${contractorName} (bid ${b.id}) ---` };
+      content.push(txt);
       const docs = byBidDocs[b.id] || { pdfs: [], csvBlocks: [] };
       for (const p of docs.pdfs) {
-        content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: p.b64 } });
+        const src: Base64PDFSource = { type: 'base64', media_type: 'application/pdf', data: p.b64 };
+        const doc: DocumentBlockParam = { type: 'document', source: src };
+        content.push(doc);
       }
       for (const c of docs.csvBlocks) {
-        content.push({ type: 'text', text: `=== SHEET/TEXT: ${c.name} ===\n${c.text}` });
+        const t: TextBlockParam = { type: 'text', text: `=== SHEET/TEXT: ${c.name} ===\n${c.text}` };
+        content.push(t);
       }
     }
     const system = `You are a seasoned Construction Executive performing bid leveling for a single CSI division (or a sub-division).
