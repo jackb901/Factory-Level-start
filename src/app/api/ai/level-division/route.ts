@@ -21,10 +21,10 @@ export async function POST(req: NextRequest) {
     const XLSX = await import("xlsx");
     const { jobId, division, subdivisionId } = await req.json().catch(() => ({} as { jobId?: string; division?: string; subdivisionId?: string }));
     const LIMITS = {
-      pdfB64PerFile: 250_000,   // ~250 KB base64 per PDF
+      pdfB64PerFile: 400_000,   // ~400 KB base64 per PDF as requested
       csvPerSheet: 50_000,      // chars per sheet
-      perBid: 200_000,          // total chars per contractor
-      maxContractors: 4,        // cap contractors per call
+      perBid: 600_000,          // total chars per contractor (allows one large PDF + some CSV)
+      maxContractors: 5,        // cap contractors per call (user requirement)
       maxDocsPerBid: 4          // cap docs per contractor
     } as const;
     if (!jobId) return new Response(JSON.stringify({ error: "Missing jobId" }), { status: 400 });
