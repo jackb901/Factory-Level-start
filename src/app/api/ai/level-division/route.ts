@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
@@ -19,8 +19,7 @@ export async function POST(req: NextRequest) {
   try {
     // Lazy-load heavy dependencies to prevent module init issues on GET/OPTIONS
     const { default: Anthropic } = await import("@anthropic-ai/sdk");
-    const { extractFromBuffer } = await import("@/lib/serverExtract");
-    type ExtractedItem = { raw_text: string; qty: number | null; unit: string | null; unit_cost: number | null; total: number | null };
+    const XLSX = await import("xlsx");
     const { jobId, division, subdivisionId } = await req.json().catch(() => ({} as { jobId?: string; division?: string; subdivisionId?: string }));
     if (!jobId) return new Response(JSON.stringify({ error: "Missing jobId" }), { status: 400 });
 
@@ -50,11 +49,11 @@ export async function POST(req: NextRequest) {
       (cons || []).forEach(c => { contractors[c.id] = c.name; });
     }
 
-    const byBid: Record<string, ExtractedItem[]> = {};
+    const byBidText: Record<string, string> = {};
     for (const b of bidList) {
       const { data: docs, error: docsErr } = await supabase.from('documents').select('storage_path').eq('bid_id', b.id);
       if (docsErr) return new Response(JSON.stringify({ error: `DB error loading documents: ${docsErr.message}` }), { status: 500 });
-      const items: ExtractedItem[] = [];
+      let combined = '';
       for (const d of (docs || [])) {
         const { data: blob, error: dlErr } = await supabase.storage.from('bids').download(d.storage_path);
         if (dlErr) {
@@ -63,15 +62,38 @@ export async function POST(req: NextRequest) {
         }
         if (!blob) continue;
         const buf = await blob.arrayBuffer();
-        const ex = await extractFromBuffer(d.storage_path, buf);
-        for (const it of ex) { items.push(it); if (items.length >= 1500) break; }
-        if (items.length >= 1500) break;
+        const lower = d.storage_path.toLowerCase();
+        if (lower.endsWith('.pdf')) {
+          const b64 = Buffer.from(buf).toString('base64');
+          const capped = b64.slice(0, 1_000_000); // cap ~1MB base64 per file
+          combined += `\n\n=== FILE: ${d.storage_path} (PDF_BASE64, len=${b64.length}, capped=${capped.length < b64.length}) ===\n${capped}`;
+        } else if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
+          type XLSXLike = { read: (b: Buffer, o: { type: 'buffer' }) => { SheetNames: string[]; Sheets: Record<string, unknown> }; utils: { sheet_to_csv: (ws: unknown) => string } };
+          const x = XLSX as unknown as XLSXLike;
+          const wb = x.read(Buffer.from(buf), { type: 'buffer' });
+          for (const wsName of wb.SheetNames) {
+            const ws = wb.Sheets[wsName];
+            const csv = x.utils.sheet_to_csv(ws);
+            const body = String(csv).slice(0, 200_000);
+            combined += `\n\n=== FILE: ${d.storage_path} (XLSX) SHEET: ${wsName} ===\n${body}`;
+            if (combined.length >= 600_000) break;
+          }
+        } else if (lower.endsWith('.csv')) {
+          const text = Buffer.from(buf).toString('utf8');
+          // keep original as-is
+          combined += `\n\n=== FILE: ${d.storage_path} (CSV) ===\n` + text.slice(0, 200_000);
+        } else {
+          // Unsupported types: include a stub header so Claude can ignore
+          const sample = Buffer.from(buf).toString('utf8').slice(0, 50);
+          combined += `\n\n=== FILE: ${d.storage_path} (unsupported type) ===\n${sample}`;
+        }
+        if (combined.length >= 600_000) break; // cap per-bid text
       }
-      byBid[b.id] = items;
+      byBidText[b.id] = combined;
     }
 
-    const totalExtracted = Object.values(byBid).reduce((n, arr) => n + (arr?.length || 0), 0);
-    if (totalExtracted === 0) {
+    const totalExtractedChars = Object.values(byBidText).reduce((n, s) => n + (s?.length || 0), 0);
+    if (totalExtractedChars === 0) {
       return new Response(JSON.stringify({ error: "No readable content extracted from documents. Ensure files are PDF/CSV/XLS/XLSX and not password-protected or scanned-only images." }), { status: 400 });
     }
 
@@ -83,10 +105,15 @@ export async function POST(req: NextRequest) {
     const promptPayload = bidList.slice(0, 6).map(b => ({
       bid_id: b.id,
       contractor_name: b.contractor_id ? (contractors[b.contractor_id] || 'Contractor') : 'Contractor',
-      items: (byBid[b.id] || []).slice(0, 300)
+      documents_text: (byBidText[b.id] || '').slice(0, 600_000)
     }));
 
-    const system = `You are a seasoned Construction Executive performing bid leveling for a single CSI division (or a sub-division). You must:
+    const system = `You are a seasoned Construction Executive performing bid leveling for a single CSI division (or a sub-division).
+You will be given, per contractor:
+- One or more PDF bids provided as base64 (marked with PDF_BASE64) — treat these as the contractor's bid documents.
+- For Excel (XLS/XLSX), all sheets are provided as CSV blocks with clear sheet names.
+- For CSV and plain text, the raw text is provided.
+Your tasks:
 - Build a comprehensive list of scope items from all bids' content.
 - For each contractor, mark each scope item as included, excluded, or not_specified; include priced amounts when present.
 - Summarize qualifications: includes, excludes, allowances, alternates, payment terms, and any pertinent fine print.
@@ -95,7 +122,7 @@ Output strict JSON only.`;
 
     const userMsg = {
       role: 'user' as const,
-      content: [{ type: 'text' as const, text: `Division: ${division || ''}${subdivisionId ? `\nSubdivision: ${subdivisionId}` : ''}\nBids: ${JSON.stringify(promptPayload).slice(0, 20000)}\n\nDesired JSON format:\n${JSON.stringify({
+      content: [{ type: 'text' as const, text: `Division: ${division || ''}${subdivisionId ? `\nSubdivision: ${subdivisionId}` : ''}\n\nBids (per contractor):\n${promptPayload.map(p => `\n--- Contractor: ${p.contractor_name} (bid ${p.bid_id}) ---\n${p.documents_text}`).join('\n').slice(0, 950000)}\n\nNotes:\n- PDF content is base64-encoded and may be truncated. Use visible text from CSV/XLSX blocks to corroborate where possible. If base64 cannot be read fully, infer from other files/sections.\n\nDesired JSON format (strict):\n${JSON.stringify({
         division_code: division || null,
         subdivision_id: subdivisionId || null,
         contractors: [{ contractor_id: '...', name: '...', total: 0 }],
