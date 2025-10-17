@@ -37,8 +37,9 @@ export async function POST(req: NextRequest) {
   if (!job) return NextResponse.json({ ok: true, message: 'No queued jobs' });
   await supabase.from('processing_jobs').update({ status: 'running', started_at: new Date().toISOString(), progress: 5 }).eq('id', job.id);
 
-  const division: string | null = job.meta?.division ?? null;
-  const subdivisionId: string | null = job.meta?.subdivisionId ?? null;
+  const meta = (job.meta ?? {}) as Record<string, unknown>;
+  const division: string | null = typeof meta["division"] === 'string' ? (meta["division"] as string) : null;
+  const subdivisionId: string | null = typeof meta["subdivisionId"] === 'string' ? (meta["subdivisionId"] as string) : null;
 
   let bidsQuery = supabase
     .from('bids')
