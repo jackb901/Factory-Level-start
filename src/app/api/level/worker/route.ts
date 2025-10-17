@@ -15,9 +15,9 @@ export async function POST(req: NextRequest) {
   const XLSX = await import("xlsx");
 
   const LIMITS = {
-    pdfB64PerFile: 400_000,
+    pdfB64PerFile: 120_000, // tighten per-file to help stay under 40k input tokens/min
     csvPerSheet: 50_000,
-    perBid: 600_000,
+    perBid: 300_000,
     maxContractors: 5,
     batchSize: 1,
     maxDocsPerBid: 4
@@ -150,7 +150,7 @@ export async function POST(req: NextRequest) {
   let merged: Report | null = null;
   let done = 0;
   for (const batch of batches) {
-    const content: ContentBlockParam[] = [];
+    let content: ContentBlockParam[] = [];
     for (const b of batch) {
       const contractorName = b.contractor_id ? (contractorsMap[b.contractor_id] || 'Contractor') : 'Contractor';
       const txt: TextBlockParam = { type: 'text', text: `--- Contractor: ${contractorName} (bid ${b.id}) ---` };
@@ -166,6 +166,59 @@ export async function POST(req: NextRequest) {
         content.push(t);
       }
     }
+
+    // Token budget: approx tokens ~= chars/4. Trim content to stay below ~30k input tokens.
+    const estTokens = (blocks: ContentBlockParam[]) => {
+      let chars = 0;
+      for (const b of blocks) {
+        if (b.type === 'text') chars += (b.text || '').length;
+        if (b.type === 'document' && (b as DocumentBlockParam).source?.type === 'base64') {
+          const src = (b as DocumentBlockParam).source as Base64PDFSource;
+          chars += (src.data || '').length;
+        }
+      }
+      return Math.ceil(chars / 4);
+    };
+    const trimToBudget = (blocks: ContentBlockParam[], maxTokens: number) => {
+      let toks = estTokens(blocks);
+      if (toks <= maxTokens) return blocks;
+      // Prefer trimming PDF data first, largest first
+      const docsIdx: number[] = [];
+      blocks.forEach((b, i) => { if (b.type === 'document') docsIdx.push(i); });
+      // sort by size desc
+      docsIdx.sort((a, b) => {
+        const da = ((blocks[a] as DocumentBlockParam).source as Base64PDFSource).data?.length || 0;
+        const db = ((blocks[b] as DocumentBlockParam).source as Base64PDFSource).data?.length || 0;
+        return db - da;
+      });
+      for (const i of docsIdx) {
+        if (toks <= maxTokens) break;
+        const src = ((blocks[i] as DocumentBlockParam).source as Base64PDFSource);
+        const cur = src.data || '';
+        if (cur.length > 40_000) { // keep minimum data
+          src.data = cur.slice(0, Math.max(40_000, Math.floor(cur.length * 0.6)));
+          toks = estTokens(blocks);
+        }
+      }
+      // If still over, trim CSV text blocks
+      if (toks > maxTokens) {
+        for (let i = 0; i < blocks.length; i++) {
+          const b = blocks[i];
+          if (toks <= maxTokens) break;
+          if (b.type === 'text') {
+            const textLen = (b.text || '').length;
+            if ((b.text || '').includes('=== SHEET/TEXT:') || textLen > 5000) {
+            const t = b.text || '';
+            (b as TextBlockParam).text = t.slice(0, Math.max(2000, Math.floor(t.length * 0.6)));
+            toks = estTokens(blocks);
+            }
+          }
+        }
+      }
+      return blocks;
+    };
+
+    content = trimToBudget(content, 30_000);
     const system = `You are a seasoned Construction Executive performing bid leveling for a single CSI division (or a sub-division).
 Build a comprehensive list of scope items. For each contractor, mark each scope item as included, excluded, or not_specified; include priced amounts when present.
 Summarize qualifications: includes, excludes, allowances, alternates, payment terms, fine print. Provide a brief recommendation. Output strict JSON only.`;
@@ -203,8 +256,17 @@ Summarize qualifications: includes, excludes, allowances, alternates, payment te
     merged = merged ? mergeReports(merged, parsed) : parsed;
     done += 1;
     await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(95, Math.round((done / batches.length) * 90) + 5) }).eq('id', job.id);
-    // small inter-batch delay to avoid acceleration limits
-    await new Promise(r => setTimeout(r, 1500));
+    // dynamic inter-batch delay based on input size to respect 40k tokens/min
+    const usedTokens = (content as ContentBlockParam[]).reduce((acc, b) => {
+      if (b.type === 'text') return acc + ((b as TextBlockParam).text?.length || 0);
+      if (b.type === 'document') {
+        const s = (b as DocumentBlockParam).source;
+        if (s && (s as Base64PDFSource).type === 'base64') return acc + (((s as Base64PDFSource).data || '').length);
+      }
+      return acc;
+    }, 0) / 4;
+    const minDelayMs = Math.ceil((usedTokens / 40_000) * 60_000); // scale to minute window
+    await new Promise(r => setTimeout(r, Math.max(1500, Math.min(20_000, minDelayMs))));
   }
 
   if (!merged) {
