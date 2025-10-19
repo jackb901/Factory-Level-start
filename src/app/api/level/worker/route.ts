@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import type { ContentBlockParam, DocumentBlockParam, TextBlockParam, Base64PDFSource } from "@anthropic-ai/sdk/resources/messages/messages";
+import type { ContentBlockParam, TextBlockParam } from "@anthropic-ai/sdk/resources/messages/messages";
+import { extractWithPython, type ExtractResult } from "@/lib/extractorClient";
 
 export const dynamic = "force-dynamic";
 export const runtime = 'nodejs';
@@ -66,11 +67,11 @@ export async function POST(req: NextRequest) {
     (cons || []).forEach(c => { contractorsMap[c.id] = c.name; });
   }
 
-  const byBidDocs: Record<string, { pdfs: { name: string; b64: string }[]; csvBlocks: { name: string; text: string }[] }> = {};
+  const byBidDocs: Record<string, { texts: { name: string; text: string }[] }> = {};
   for (const b of bidList) {
     const { data: docs, error: docsErr } = await supabase.from('documents').select('storage_path').eq('bid_id', b.id);
     if (docsErr) continue;
-    const entry = { pdfs: [] as { name: string; b64: string }[], csvBlocks: [] as { name: string; text: string }[] };
+    const entry = { texts: [] as { name: string; text: string }[] };
     let docCount = 0;
     for (const d of (docs || [])) {
       if (docCount >= LIMITS.maxDocsPerBid) break;
@@ -79,8 +80,24 @@ export async function POST(req: NextRequest) {
       const buf = Buffer.from(await blob.arrayBuffer());
       const lower = d.storage_path.toLowerCase();
       if (lower.endsWith('.pdf')) {
-        const b64 = buf.toString('base64').slice(0, LIMITS.pdfB64PerFile);
-        entry.pdfs.push({ name: d.storage_path, b64 });
+        try {
+          const extracted: ExtractResult = await extractWithPython(buf, d.storage_path);
+          for (const p of extracted.pages) {
+            if (p.tables && p.tables.length) {
+              p.tables.forEach((tbl, ti) => {
+                const csv = tbl.map(row => row.map(c => (c ?? '').replace(/\n/g,' ')).join(',')).join('\n');
+                entry.texts.push({ name: `${d.storage_path} :: page ${p.number} :: table ${ti+1}`, text: csv });
+              });
+            }
+            if (p.text_blocks && p.text_blocks.length) {
+              const block = p.text_blocks.join('\n');
+              entry.texts.push({ name: `${d.storage_path} :: page ${p.number} :: text`, text: block });
+            }
+          }
+        } catch (e) {
+          // fallback: raw bytes size note
+          entry.texts.push({ name: `${d.storage_path} :: pdf`, text: `PDF extraction failed: ${(e as Error).message}` });
+        }
       } else if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
         type XLSXLike = { read: (b: Buffer, o: { type: 'buffer' }) => { SheetNames: string[]; Sheets: Record<string, unknown> }; utils: { sheet_to_csv: (ws: unknown) => string } };
         const x = XLSX as unknown as XLSXLike;
@@ -88,11 +105,11 @@ export async function POST(req: NextRequest) {
         for (const wsName of wb.SheetNames) {
           const ws = wb.Sheets[wsName];
           const csv = x.utils.sheet_to_csv(ws);
-          entry.csvBlocks.push({ name: `${d.storage_path} :: ${wsName}`, text: String(csv).slice(0, LIMITS.csvPerSheet) });
+          entry.texts.push({ name: `${d.storage_path} :: ${wsName}`, text: String(csv).slice(0, LIMITS.csvPerSheet) });
           if (entry.csvBlocks.length >= 8) break;
         }
       } else if (lower.endsWith('.csv')) {
-        entry.csvBlocks.push({ name: d.storage_path, text: buf.toString('utf8').slice(0, LIMITS.csvPerSheet) });
+        entry.texts.push({ name: d.storage_path, text: buf.toString('utf8').slice(0, LIMITS.csvPerSheet) });
       }
       docCount += 1;
     }
@@ -155,14 +172,9 @@ export async function POST(req: NextRequest) {
       const contractorName = b.contractor_id ? (contractorsMap[b.contractor_id] || 'Contractor') : 'Contractor';
       const txt: TextBlockParam = { type: 'text', text: `--- Contractor: ${contractorName} (bid ${b.id}) ---` };
       content.push(txt);
-      const docs = byBidDocs[b.id] || { pdfs: [], csvBlocks: [] };
-      for (const p of docs.pdfs) {
-        const src: Base64PDFSource = { type: 'base64', media_type: 'application/pdf', data: p.b64 };
-        const doc: DocumentBlockParam = { type: 'document', source: src };
-        content.push(doc);
-      }
-      for (const c of docs.csvBlocks) {
-        const t: TextBlockParam = { type: 'text', text: `=== SHEET/TEXT: ${c.name} ===\n${c.text}` };
+      const docs = byBidDocs[b.id] || { texts: [] };
+      for (const c of docs.texts) {
+        const t: TextBlockParam = { type: 'text', text: `=== EXTRACT: ${c.name} ===\n${c.text}` };
         content.push(t);
       }
     }
