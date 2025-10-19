@@ -15,7 +15,13 @@ export async function sha256(buffer: ArrayBuffer): Promise<string> {
 }
 
 export async function extractWithPython(pdfBuffer: ArrayBuffer, fileName: string): Promise<ExtractResult> {
-  const url = process.env.PDF_EXTRACTOR_URL;
+  const raw = process.env.PDF_EXTRACTOR_URL;
+  let url = raw;
+  if (raw) {
+    const trimmed = raw.trim();
+    // If user provided base URL without path, append /extract automatically
+    url = /\/?extract\/?$/.test(trimmed) ? trimmed.replace(/\/?$/, '') : `${trimmed.replace(/\/?$/, '')}/extract`;
+  }
   if (!url) throw new Error('Missing PDF_EXTRACTOR_URL');
   const res = await fetch(url, {
     method: 'POST',

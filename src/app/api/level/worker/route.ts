@@ -100,8 +100,23 @@ export async function POST(req: NextRequest) {
             }
           }
         } catch (e) {
-          // fallback: raw bytes size note
-          entry.texts.push({ name: `${d.storage_path} :: pdf`, text: `PDF extraction failed: ${(e as Error).message}` });
+          const msg = (e as Error)?.message || String(e);
+          if (/Missing PDF_EXTRACTOR_URL/i.test(msg)) {
+            await supabase
+              .from('processing_jobs')
+              .update({ status: 'failed', error: 'PDF_EXTRACTOR_URL is not set. Configure the Python extractor endpoint in environment variables.', finished_at: new Date().toISOString() })
+              .eq('id', job.id);
+            return NextResponse.json({ error: 'PDF_EXTRACTOR_URL not set' }, { status: 500 });
+          }
+          if (/404/.test(msg)) {
+            await supabase
+              .from('processing_jobs')
+              .update({ status: 'failed', error: 'Extractor 404: Ensure the URL points to the /extract route (we now append /extract automatically).', finished_at: new Date().toISOString() })
+              .eq('id', job.id);
+            return NextResponse.json({ error: 'Extractor 404' }, { status: 500 });
+          }
+          // Skip embedding error text into candidate scope
+          continue;
         }
       } else if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
         type XLSXLike = { read: (b: Buffer, o: { type: 'buffer' }) => { SheetNames: string[]; Sheets: Record<string, unknown> }; utils: { sheet_to_csv: (ws: unknown) => string } };
