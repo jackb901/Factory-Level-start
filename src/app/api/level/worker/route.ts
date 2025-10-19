@@ -81,7 +81,8 @@ export async function POST(req: NextRequest) {
       const lower = d.storage_path.toLowerCase();
       if (lower.endsWith('.pdf')) {
         try {
-          const extracted: ExtractResult = await extractWithPython(buf, d.storage_path);
+          const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+          const extracted: ExtractResult = await extractWithPython(ab, d.storage_path);
           for (const p of extracted.pages) {
             if (p.tables && p.tables.length) {
               p.tables.forEach((tbl, ti) => {
@@ -106,7 +107,7 @@ export async function POST(req: NextRequest) {
           const ws = wb.Sheets[wsName];
           const csv = x.utils.sheet_to_csv(ws);
           entry.texts.push({ name: `${d.storage_path} :: ${wsName}`, text: String(csv).slice(0, LIMITS.csvPerSheet) });
-          if (entry.csvBlocks.length >= 8) break;
+          if (entry.texts.length >= 8) break;
         }
       } else if (lower.endsWith('.csv')) {
         entry.texts.push({ name: d.storage_path, text: buf.toString('utf8').slice(0, LIMITS.csvPerSheet) });
