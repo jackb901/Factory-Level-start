@@ -185,42 +185,20 @@ export async function POST(req: NextRequest) {
       let chars = 0;
       for (const b of blocks) {
         if (b.type === 'text') chars += (b.text || '').length;
-        if (b.type === 'document' && (b as DocumentBlockParam).source?.type === 'base64') {
-          const src = (b as DocumentBlockParam).source as Base64PDFSource;
-          chars += (src.data || '').length;
-        }
       }
       return Math.ceil(chars / 4);
     };
     const trimToBudget = (blocks: ContentBlockParam[], maxTokens: number) => {
       let toks = estTokens(blocks);
       if (toks <= maxTokens) return blocks;
-      // Prefer trimming PDF data first, largest first
-      const docsIdx: number[] = [];
-      blocks.forEach((b, i) => { if (b.type === 'document') docsIdx.push(i); });
-      // sort by size desc
-      docsIdx.sort((a, b) => {
-        const da = ((blocks[a] as DocumentBlockParam).source as Base64PDFSource).data?.length || 0;
-        const db = ((blocks[b] as DocumentBlockParam).source as Base64PDFSource).data?.length || 0;
-        return db - da;
-      });
-      for (const i of docsIdx) {
-        if (toks <= maxTokens) break;
-        const src = ((blocks[i] as DocumentBlockParam).source as Base64PDFSource);
-        const cur = src.data || '';
-        if (cur.length > 40_000) { // keep minimum data
-          src.data = cur.slice(0, Math.max(40_000, Math.floor(cur.length * 0.6)));
-          toks = estTokens(blocks);
-        }
-      }
-      // If still over, trim CSV text blocks
+      // Trim large text blocks (prefer extracted tables/text first)
       if (toks > maxTokens) {
         for (let i = 0; i < blocks.length; i++) {
           const b = blocks[i];
           if (toks <= maxTokens) break;
           if (b.type === 'text') {
             const textLen = (b.text || '').length;
-            if ((b.text || '').includes('=== SHEET/TEXT:') || textLen > 5000) {
+            if ((b.text || '').includes('=== EXTRACT:') || textLen > 5000) {
             const t = b.text || '';
             (b as TextBlockParam).text = t.slice(0, Math.max(2000, Math.floor(t.length * 0.6)));
             toks = estTokens(blocks);
@@ -270,14 +248,7 @@ Summarize qualifications: includes, excludes, allowances, alternates, payment te
     done += 1;
     await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(95, Math.round((done / batches.length) * 90) + 5) }).eq('id', job.id);
     // dynamic inter-batch delay based on input size to respect 40k tokens/min
-    const usedTokens = (content as ContentBlockParam[]).reduce((acc, b) => {
-      if (b.type === 'text') return acc + ((b as TextBlockParam).text?.length || 0);
-      if (b.type === 'document') {
-        const s = (b as DocumentBlockParam).source;
-        if (s && (s as Base64PDFSource).type === 'base64') return acc + (((s as Base64PDFSource).data || '').length);
-      }
-      return acc;
-    }, 0) / 4;
+    const usedTokens = (content as ContentBlockParam[]).reduce((acc, b) => acc + (b.type === 'text' ? ((b as TextBlockParam).text?.length || 0) : 0), 0) / 4;
     const minDelayMs = Math.ceil((usedTokens / 40_000) * 60_000); // scale to minute window
     await new Promise(r => setTimeout(r, Math.max(1500, Math.min(20_000, minDelayMs))));
   }
