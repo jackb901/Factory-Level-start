@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { ContentBlockParam, TextBlockParam } from "@anthropic-ai/sdk/resources/messages/messages";
 import { extractWithPython, type ExtractResult } from "@/lib/extractorClient";
+import { DIV23_SCOPE, buildSynonymIndex, canonize } from "@/lib/scope/d23";
 
 export const dynamic = "force-dynamic";
 export const runtime = 'nodejs';
@@ -142,6 +143,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing ANTHROPIC_API_KEY' }, { status: 500 });
   }
   const anthropic = new Anthropic({ apiKey: anthropicKey });
+  const scopeIndex = buildSynonymIndex(DIV23_SCOPE);
 
   // Build candidate scope items deterministically from extracted texts/tables
   const normalizeScope = (s: string) => {
@@ -179,7 +181,13 @@ export async function POST(req: NextRequest) {
     const docs = byBidDocs[b.id] || { texts: [] };
     for (const t of docs.texts) extractCandidatesFromText(t.name, t.text).forEach(s => candidateUnionSet.add(s));
   }
-  const candidateUnion = Array.from(candidateUnionSet).slice(0, 300);
+  // Canonicalize against division dictionary and keep unique
+  const canonicalCandidates: string[] = [];
+  for (const s of candidateUnionSet) {
+    const canon = canonize(scopeIndex, s) || s;
+    if (!canonicalCandidates.includes(canon)) canonicalCandidates.push(canon);
+  }
+  const candidateUnion = canonicalCandidates.slice(0, 300);
 
   const batches: typeof bidList[] = [];
   for (let i = 0; i < bidList.length; i += LIMITS.batchSize) batches.push(bidList.slice(i, i + LIMITS.batchSize));
@@ -209,7 +217,7 @@ export async function POST(req: NextRequest) {
     const b = batch[0];
     let content: ContentBlockParam[] = [];
     const contractorName = b.contractor_id ? (contractorsMap[b.contractor_id] || 'Contractor') : 'Contractor';
-    const instruct: TextBlockParam = { type: 'text', text: `You are labeling scope coverage for a single contractor's bid. STRICT JSON ONLY.\nSCHEMA:{"items":[{"name":string,"status":"included"|"excluded"|"not_specified","price"?:number|null,"notes"?:string}],"qualifications":{"includes"?:string[],"excludes"?:string[],"allowances"?:string[],"alternates"?:string[],"payment_terms"?:string[],"fine_print"?:string[]}}\nRules: Use the provided CANDIDATE_SCOPE as the canonical list; if you find additional clear line-items in extracts, add them. Prefer exact line-item names from tables' first column.` };
+    const instruct: TextBlockParam = { type: 'text', text: `You are labeling scope coverage for a single contractor's bid. STRICT JSON ONLY.\nSCHEMA:{"items":[{"name":string,"status":"included"|"excluded"|"not_specified","price"?:number|null,"notes"?:string}],"qualifications":{"includes"?:string[],"excludes"?:string[],"allowances"?:string[],"alternates"?:string[],"payment_terms"?:string[],"fine_print"?:string[]},"total"?:number|null}\nRules: Use the provided CANDIDATE_SCOPE as the canonical list; when bid wording differs (e.g., '40 ton AHU' vs '40 ton HVAC unit'), map to the same item. For each item, look for evidence with quantities/capacities/line-items; if absent, mark excluded or not_specified accordingly. Extract total/base bid if present.` };
     content.push(instruct);
     const candBlock: TextBlockParam = { type: 'text', text: `CANDIDATE_SCOPE (union across contractors):\n${candidateUnion.map((s,i)=>`${i+1}. ${s}`).join('\n')}` };
     content.push(candBlock);
@@ -219,7 +227,15 @@ export async function POST(req: NextRequest) {
     let accChars = 0;
     for (const c of docs.texts) {
       if (accChars > 120_000) break; // ~30k tokens
-      const snippet = c.text.length > 4000 ? c.text.slice(0, 4000) : c.text;
+      // Drop boilerplate noise; keep likely line-items
+      const raw = c.text;
+      const filtered = raw.split(/\r?\n/).filter(line => {
+        const l = line.toLowerCase();
+        if (!/[a-z]/.test(l)) return false;
+        if (/^(page\s*\d+|proposal|address:|phone:|fax:|email:|license|liability|terms|net\s*\d+|valid for|covid|thank you|signature|receipt)/.test(l)) return false;
+        return true;
+      }).join('\n');
+      const snippet = filtered.length > 4000 ? filtered.slice(0, 4000) : filtered;
       const t: TextBlockParam = { type: 'text', text: `=== EXTRACT: ${c.name} ===\n${snippet}` };
       content.push(t);
       accChars += t.text.length;
@@ -286,8 +302,13 @@ export async function POST(req: NextRequest) {
     const block = Array.isArray(resp.content) ? (resp.content.find((b: unknown) => (typeof b === 'object' && b !== null && (b as { type?: string }).type === 'text' && typeof (b as { text?: unknown }).text === 'string')) as { type: string; text?: string } | undefined) : undefined;
     const text = block?.text || '{}';
     const tryParse = (t: string) => { try { return JSON.parse(t) as { items?: PerContractor['items']; qualifications?: PerContractor['qualifications'] }; } catch { return null; } };
-    const parsed = tryParse(text) || tryParse((text.match(/\{[\s\S]*\}/)?.[0] || '')) || { items: [], qualifications: {} };
+    const parsed = tryParse(text) || tryParse((text.match(/\{[\s\S]*\}/)?.[0] || '')) || { items: [], qualifications: {}, total: null } as { items?: PerItem[]; qualifications?: Qual; total?: number|null };
     const items = Array.isArray(parsed.items) ? parsed.items.filter(x => typeof x?.name === 'string' && typeof x?.status === 'string') : [];
+    // Canonicalize item names to dictionary
+    for (const it of items) {
+      const mapped = canonize(scopeIndex, it.name);
+      if (mapped) it.name = mapped;
+    }
     per[b.contractor_id || 'unassigned'] = { items, qualifications: parsed.qualifications };
     done += 1;
     await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(90, Math.round((done / batches.length) * 85) + 5) }).eq('id', job.id);
@@ -324,10 +345,25 @@ export async function POST(req: NextRequest) {
       fine_print: Array.isArray(q?.fine_print) ? q?.fine_print : [],
     };
   }
+  // Derive contractor totals if present or sum of included prices
+  const contractorsWithTotals = canonicalContractors.map(c => {
+    const cid = c.contractor_id || 'unassigned';
+    let total: number | null = null;
+    const items = per[cid]?.items || [];
+    // try explicit total parsed by the model
+    // @ts-expect-error: total may be provided in qualifications as note later; otherwise compute sum
+    if (typeof (per[cid]?.total) === 'number') total = per[cid]?.total as unknown as number;
+    if (total == null) {
+      const sum = items.reduce((acc, it) => acc + ((it.status === 'included' && typeof it.price === 'number') ? it.price : 0), 0);
+      total = sum > 0 ? sum : null;
+    }
+    return { ...c, total };
+  });
+
   const mergedReport: Report = {
     division_code: division || null,
     subdivision_id: subdivisionId || null,
-    contractors: canonicalContractors,
+    contractors: contractorsWithTotals,
     scope_items: scopeItems,
     matrix,
     qualifications: quals,
