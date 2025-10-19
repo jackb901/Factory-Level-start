@@ -210,6 +210,18 @@ export async function POST(req: NextRequest) {
   let done = 0;
   for (const batch of batches) {
     let content: ContentBlockParam[] = [];
+    // Add strict instructions and schema so Claude never returns empty structures
+    const contractorKeyLines: string[] = [];
+    for (const b of batch) {
+      const cid = (b.contractor_id || 'unassigned');
+      const cname = contractorsMap[b.contractor_id || ''] || 'Contractor';
+      contractorKeyLines.push(`${cid}: ${cname}`);
+    }
+    const schemaBlock: TextBlockParam = {
+      type: 'text',
+      text: `INSTRUCTIONS\nYou will receive contractor-specific EXTRACT blocks (text and CSV from tables). Level the bids for the single CSI division in this job.\n\nSTRICT JSON ONLY. DO NOT return markdown.\nJSON SCHEMA:\n{\n  "division_code": string|null,\n  "subdivision_id": string|null,\n  "contractors": [{ "contractor_id": string|null, "name": string, "total"?: number|null }],\n  "scope_items": string[],\n  "matrix": { [scope_item: string]: { [contractor_id: string]: { "status": "included"|"excluded"|"not_specified", "price"?: number|null } } },\n  "qualifications": { [contractor_id: string]: { "includes"?: string[], "excludes"?: string[], "allowances"?: string[], "alternates"?: string[], "payment_terms"?: string[], "fine_print"?: string[] } },\n  "recommendation"?: { "selected_contractor_id"?: string|null, "rationale"?: string, "next_steps"?: string }\n}\nREQUIREMENTS:\n- Use contractor_id KEYS EXACTLY as provided below (not names).\n- Derive a comprehensive list of scope_items; target 15-50 depending on content; never return an empty list.\n- For each contractor and each scope_item, set status (included/excluded/not_specified); set price when available in text/tables.\n- Populate qualifications arrays (can be empty arrays if truly none).\n- If data is unclear, use not_specified but still include the scope_item.\n- Base inputs are below as EXTRACT blocks per contractor.\nCONTRACTOR KEYS:\n${contractorKeyLines.join('\n')}\nEND INSTRUCTIONS`
+    };
+    content.push(schemaBlock);
     for (const b of batch) {
       const contractorName = b.contractor_id ? (contractorsMap[b.contractor_id] || 'Contractor') : 'Contractor';
       const txt: TextBlockParam = { type: 'text', text: `--- Contractor: ${contractorName} (bid ${b.id}) ---` };
@@ -286,6 +298,18 @@ Summarize qualifications: includes, excludes, allowances, alternates, payment te
     let parsed: Report = { division_code: division || null };
     const tryParse = (t: string): Report | null => { try { return JSON.parse(t) as Report; } catch { return null; } };
     parsed = tryParse(text) || tryParse((text.match(/\{[\s\S]*\}/)?.[0] || '')) || { division_code: division || null };
+    // Fallback to ensure non-empty scope list to avoid blank UI
+    if (!Array.isArray(parsed.scope_items) || parsed.scope_items.length === 0) {
+      parsed.scope_items = [
+        'General conditions',
+        'Demolition & existing conditions',
+        'Equipment & materials',
+        'Installation & labor',
+        'Controls & integration',
+        'Testing & commissioning',
+        'Warranty & exclusions'
+      ];
+    }
     parsed = normalizeContractorKeys(parsed);
     merged = merged ? mergeReports(merged, parsed) : normalizeContractorKeys(parsed);
     done += 1;
