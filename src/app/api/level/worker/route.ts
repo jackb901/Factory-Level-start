@@ -146,11 +146,12 @@ export async function POST(req: NextRequest) {
     const out: Report = { ...rep };
     if (out.matrix && typeof out.matrix === 'object') {
       const newMatrix: Record<string, Record<string, { status: string; price?: number | null }>> = {};
-      for (const scope of Object.keys(out.matrix)) {
-        const row = out.matrix[scope] || {};
+      for (const scope of Object.keys(out.matrix as Record<string, unknown>)) {
+        const row = (out.matrix as Record<string, Record<string, { status: string; price?: number | null }>>)[scope] || {} as Record<string, { status: string; price?: number | null }>;
         const newRow: Record<string, { status: string; price?: number | null }> = {};
         for (const key of Object.keys(row)) {
-          const norm = reverseNameToId[key.toLowerCase?.() ? key.toLowerCase() : key] || key;
+          const normKey = key.toLowerCase();
+          const norm = reverseNameToId[normKey] || key;
           newRow[norm] = row[key]!;
         }
         newMatrix[scope] = newRow;
@@ -159,9 +160,10 @@ export async function POST(req: NextRequest) {
     }
     if (out.qualifications && typeof out.qualifications === 'object') {
       const newQ: NonNullable<Report['qualifications']> = {};
-      for (const key of Object.keys(out.qualifications)) {
-        const norm = reverseNameToId[key.toLowerCase?.() ? key.toLowerCase() : key] || key;
-        newQ[norm] = out.qualifications[key]!;
+      for (const key of Object.keys(out.qualifications as Record<string, unknown>)) {
+        const normKey = key.toLowerCase();
+        const norm = reverseNameToId[normKey] || key;
+        newQ[norm] = (out.qualifications as NonNullable<Report['qualifications']>)[key]!;
       }
       out.qualifications = newQ;
     }
