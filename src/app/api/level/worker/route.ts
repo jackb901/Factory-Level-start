@@ -128,6 +128,44 @@ export async function POST(req: NextRequest) {
   }
   const anthropic = new Anthropic({ apiKey: anthropicKey });
 
+  // Build candidate scope items deterministically from extracted texts/tables
+  const normalizeScope = (s: string) => {
+    const t = s.replace(/[_\-\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!t) return '';
+    const lower = t.toLowerCase();
+    const skip = ['total', 'subtotal', 'tax', 'notes', 'note', 'bid form', 'signature', 'thank you'];
+    if (skip.includes(lower)) return '';
+    return t.length > 120 ? t.slice(0, 120) : t;
+  };
+  const extractCandidatesFromText = (name: string, text: string): string[] => {
+    const out: string[] = [];
+    // If it looks like a table CSV, take first column as scope candidates
+    if (/table/i.test(name) || text.includes(',')) {
+      const lines = text.split(/\r?\n/);
+      for (const line of lines) {
+        const first = (line.split(',')[0] || '').trim();
+        const n = normalizeScope(first);
+        if (n && /[a-zA-Z]/.test(n) && n.length >= 2) out.push(n);
+      }
+    } else {
+      // Bullet/section headers
+      const lines = text.split(/\r?\n/);
+      for (const line of lines) {
+        const m = line.match(/^\s*(?:[-*•\u2022]|\d+\.|[A-Z][\w\s]{2,})\s*(.+)$/);
+        const cand = m ? m[1] : line;
+        const n = normalizeScope(cand);
+        if (n && /[a-zA-Z]/.test(n) && n.length >= 3) out.push(n);
+      }
+    }
+    return out;
+  };
+  const candidateUnionSet = new Set<string>();
+  for (const b of bidList) {
+    const docs = byBidDocs[b.id] || { texts: [] };
+    for (const t of docs.texts) extractCandidatesFromText(t.name, t.text).forEach(s => candidateUnionSet.add(s));
+  }
+  const candidateUnion = Array.from(candidateUnionSet).slice(0, 300);
+
   const batches: typeof bidList[] = [];
   for (let i = 0; i < bidList.length; i += LIMITS.batchSize) batches.push(bidList.slice(i, i + LIMITS.batchSize));
   await supabase.from('processing_jobs').update({ batches_total: batches.length }).eq('id', job.id);
@@ -206,31 +244,28 @@ export async function POST(req: NextRequest) {
     return out;
   };
 
-  let merged: Report | null = null;
+  type PerContractor = { items: Array<{ name: string; status: 'included'|'excluded'|'not_specified'; price?: number|null; notes?: string }>; qualifications?: Report['qualifications'][string] };
+  const per: Record<string, PerContractor> = {};
   let done = 0;
   for (const batch of batches) {
+    // batchSize=1 → single contractor per loop
+    const b = batch[0];
     let content: ContentBlockParam[] = [];
-    // Add strict instructions and schema so Claude never returns empty structures
-    const contractorKeyLines: string[] = [];
-    for (const b of batch) {
-      const cid = (b.contractor_id || 'unassigned');
-      const cname = contractorsMap[b.contractor_id || ''] || 'Contractor';
-      contractorKeyLines.push(`${cid}: ${cname}`);
-    }
-    const schemaBlock: TextBlockParam = {
-      type: 'text',
-      text: `INSTRUCTIONS\nYou will receive contractor-specific EXTRACT blocks (text and CSV from tables). Level the bids for the single CSI division in this job.\n\nSTRICT JSON ONLY. DO NOT return markdown.\nJSON SCHEMA:\n{\n  "division_code": string|null,\n  "subdivision_id": string|null,\n  "contractors": [{ "contractor_id": string|null, "name": string, "total"?: number|null }],\n  "scope_items": string[],\n  "matrix": { [scope_item: string]: { [contractor_id: string]: { "status": "included"|"excluded"|"not_specified", "price"?: number|null } } },\n  "qualifications": { [contractor_id: string]: { "includes"?: string[], "excludes"?: string[], "allowances"?: string[], "alternates"?: string[], "payment_terms"?: string[], "fine_print"?: string[] } },\n  "recommendation"?: { "selected_contractor_id"?: string|null, "rationale"?: string, "next_steps"?: string }\n}\nREQUIREMENTS:\n- Use contractor_id KEYS EXACTLY as provided below (not names).\n- Derive a comprehensive list of scope_items; target 15-50 depending on content; never return an empty list.\n- For each contractor and each scope_item, set status (included/excluded/not_specified); set price when available in text/tables.\n- Populate qualifications arrays (can be empty arrays if truly none).\n- If data is unclear, use not_specified but still include the scope_item.\n- Base inputs are below as EXTRACT blocks per contractor.\nCONTRACTOR KEYS:\n${contractorKeyLines.join('\n')}\nEND INSTRUCTIONS`
-    };
-    content.push(schemaBlock);
-    for (const b of batch) {
-      const contractorName = b.contractor_id ? (contractorsMap[b.contractor_id] || 'Contractor') : 'Contractor';
-      const txt: TextBlockParam = { type: 'text', text: `--- Contractor: ${contractorName} (bid ${b.id}) ---` };
-      content.push(txt);
-      const docs = byBidDocs[b.id] || { texts: [] };
-      for (const c of docs.texts) {
-        const t: TextBlockParam = { type: 'text', text: `=== EXTRACT: ${c.name} ===\n${c.text}` };
-        content.push(t);
-      }
+    const contractorName = b.contractor_id ? (contractorsMap[b.contractor_id] || 'Contractor') : 'Contractor';
+    const instruct: TextBlockParam = { type: 'text', text: `You are labeling scope coverage for a single contractor's bid. STRICT JSON ONLY.\nSCHEMA:{"items":[{"name":string,"status":"included"|"excluded"|"not_specified","price"?:number|null,"notes"?:string}],"qualifications":{"includes"?:string[],"excludes"?:string[],"allowances"?:string[],"alternates"?:string[],"payment_terms"?:string[],"fine_print"?:string[]}}\nRules: Use the provided CANDIDATE_SCOPE as the canonical list; if you find additional clear line-items in extracts, add them. Prefer exact line-item names from tables' first column.` };
+    content.push(instruct);
+    const candBlock: TextBlockParam = { type: 'text', text: `CANDIDATE_SCOPE (union across contractors):\n${candidateUnion.map((s,i)=>`${i+1}. ${s}`).join('\n')}` };
+    content.push(candBlock);
+    content.push({ type: 'text', text: `--- Contractor: ${contractorName} (id ${b.contractor_id || 'unassigned'}) ---` });
+    const docs = byBidDocs[b.id] || { texts: [] };
+    // Limit evidence to ~30k tokens worth of chars
+    let accChars = 0;
+    for (const c of docs.texts) {
+      if (accChars > 120_000) break; // ~30k tokens
+      const snippet = c.text.length > 4000 ? c.text.slice(0, 4000) : c.text;
+      const t: TextBlockParam = { type: 'text', text: `=== EXTRACT: ${c.name} ===\n${snippet}` };
+      content.push(t);
+      accChars += t.text.length;
     }
 
     // Token budget: approx tokens ~= chars/4. Trim content to stay below ~30k input tokens.
@@ -263,9 +298,7 @@ export async function POST(req: NextRequest) {
     };
 
     content = trimToBudget(content, 30_000);
-    const system = `You are a seasoned Construction Executive performing bid leveling for a single CSI division (or a sub-division).
-Build a comprehensive list of scope items. For each contractor, mark each scope item as included, excluded, or not_specified; include priced amounts when present.
-Summarize qualifications: includes, excludes, allowances, alternates, payment terms, fine print. Provide a brief recommendation. Output strict JSON only.`;
+    const system = `You are a seasoned Construction Executive. Label scope coverage for one contractor bid against a provided candidate scope list. Use evidence from extracts; do not hallucinate prices.`;
 
     const callClaudeWithRetry = async (tries = 4) => {
       let attempt = 0;
@@ -295,39 +328,57 @@ Summarize qualifications: includes, excludes, allowances, alternates, payment te
     }
     const block = Array.isArray(resp.content) ? (resp.content.find((b: unknown) => (typeof b === 'object' && b !== null && (b as { type?: string }).type === 'text' && typeof (b as { text?: unknown }).text === 'string')) as { type: string; text?: string } | undefined) : undefined;
     const text = block?.text || '{}';
-    let parsed: Report = { division_code: division || null };
-    const tryParse = (t: string): Report | null => { try { return JSON.parse(t) as Report; } catch { return null; } };
-    parsed = tryParse(text) || tryParse((text.match(/\{[\s\S]*\}/)?.[0] || '')) || { division_code: division || null };
-    // Fallback to ensure non-empty scope list to avoid blank UI
-    if (!Array.isArray(parsed.scope_items) || parsed.scope_items.length === 0) {
-      parsed.scope_items = [
-        'General conditions',
-        'Demolition & existing conditions',
-        'Equipment & materials',
-        'Installation & labor',
-        'Controls & integration',
-        'Testing & commissioning',
-        'Warranty & exclusions'
-      ];
-    }
-    parsed = normalizeContractorKeys(parsed);
-    merged = merged ? mergeReports(merged, parsed) : normalizeContractorKeys(parsed);
+    const tryParse = (t: string) => { try { return JSON.parse(t) as { items?: PerContractor['items']; qualifications?: PerContractor['qualifications'] }; } catch { return null; } };
+    const parsed = tryParse(text) || tryParse((text.match(/\{[\s\S]*\}/)?.[0] || '')) || { items: [], qualifications: {} };
+    const items = Array.isArray(parsed.items) ? parsed.items.filter(x => typeof x?.name === 'string' && typeof x?.status === 'string') : [];
+    per[b.contractor_id || 'unassigned'] = { items, qualifications: parsed.qualifications };
     done += 1;
-    await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(95, Math.round((done / batches.length) * 90) + 5) }).eq('id', job.id);
+    await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(90, Math.round((done / batches.length) * 85) + 5) }).eq('id', job.id);
     // dynamic inter-batch delay based on input size to respect 40k tokens/min
-    const usedTokens = (content as ContentBlockParam[]).reduce((acc, b) => acc + (b.type === 'text' ? ((b as TextBlockParam).text?.length || 0) : 0), 0) / 4;
+    const usedTokens = (content as ContentBlockParam[]).reduce((acc, cb) => acc + (cb.type === 'text' ? ((cb as TextBlockParam).text?.length || 0) : 0), 0) / 4;
     const minDelayMs = Math.ceil((usedTokens / 40_000) * 60_000); // scale to minute window
     await new Promise(r => setTimeout(r, Math.max(1500, Math.min(20_000, minDelayMs))));
   }
 
-  if (!merged) {
-    await supabase.from('processing_jobs').update({ status: 'failed', error: 'No merged report', finished_at: new Date().toISOString() }).eq('id', job.id);
-    return NextResponse.json({ error: 'No merged report' }, { status: 500 });
+  // Merge pass → final division-level report
+  const scopeSet = new Set<string>(candidateUnion);
+  Object.values(per).forEach(p => (p.items || []).forEach(it => { const n = normalizeScope(it.name || ''); if (n) scopeSet.add(n); }));
+  const scopeItems = Array.from(scopeSet);
+  const matrix: NonNullable<Report['matrix']> = {};
+  for (const s of scopeItems) {
+    matrix[s] = {};
+    for (const b of bidList) {
+      const cid = b.contractor_id || 'unassigned';
+      const arr = per[cid]?.items || [];
+      const found = arr.find((it: { name: string; status?: 'included'|'excluded'|'not_specified'; price?: number|null }) => normalizeScope(it.name) === s);
+      matrix[s][cid] = { status: (found?.status || 'not_specified'), price: typeof found?.price === 'number' ? found?.price : null };
+    }
   }
+  const quals: NonNullable<Report['qualifications']> = {};
+  for (const b of bidList) {
+    const cid = b.contractor_id || 'unassigned';
+    const q = (per[cid]?.qualifications || {}) as Record<string, unknown>;
+    quals[cid] = {
+      includes: Array.isArray(q?.includes) ? q?.includes : [],
+      excludes: Array.isArray(q?.excludes) ? q?.excludes : [],
+      allowances: Array.isArray(q?.allowances) ? q?.allowances : [],
+      alternates: Array.isArray(q?.alternates) ? q?.alternates : [],
+      payment_terms: Array.isArray(q?.payment_terms) ? q?.payment_terms : [],
+      fine_print: Array.isArray(q?.fine_print) ? q?.fine_print : [],
+    };
+  }
+  const mergedReport: Report = {
+    division_code: division || null,
+    subdivision_id: subdivisionId || null,
+    contractors: canonicalContractors,
+    scope_items: scopeItems,
+    matrix,
+    qualifications: quals,
+  };
 
   const { data: user } = await supabase.auth.getUser();
   const userId = user.user?.id;
-  await supabase.from('bid_level_reports').insert({ user_id: userId, job_id: job.job_id, division_code: division || null, subdivision_id: subdivisionId || null, report: merged });
+  await supabase.from('bid_level_reports').insert({ user_id: userId, job_id: job.job_id, division_code: division || null, subdivision_id: subdivisionId || null, report: mergedReport });
   await supabase.from('processing_jobs').update({ status: 'success', progress: 100, finished_at: new Date().toISOString() }).eq('id', job.id);
   return NextResponse.json({ ok: true, processed: job.id });
 }
