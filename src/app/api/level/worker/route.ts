@@ -66,6 +66,10 @@ export async function POST(req: NextRequest) {
     const { data: cons } = await supabase.from('contractors').select('id,name').in('id', contractorIds);
     (cons || []).forEach(c => { contractorsMap[c.id] = c.name; });
   }
+  const reverseNameToId: Record<string, string> = {};
+  Object.entries(contractorsMap).forEach(([id, name]) => { if (name) reverseNameToId[name.toLowerCase()] = id; });
+  const canonicalContractors = Array.from(new Set(bidList.map(b => b.contractor_id || 'unassigned')))
+    .map(cid => ({ contractor_id: cid === 'unassigned' ? null : cid, name: contractorsMap[cid] || 'Contractor' }));
 
   const byBidDocs: Record<string, { texts: { name: string; text: string }[] }> = {};
   for (const b of bidList) {
@@ -138,8 +142,42 @@ export async function POST(req: NextRequest) {
     recommendation?: unknown;
   };
 
+  const normalizeContractorKeys = (rep: Report): Report => {
+    const out: Report = { ...rep };
+    if (out.matrix && typeof out.matrix === 'object') {
+      const newMatrix: Record<string, Record<string, { status: string; price?: number | null }>> = {};
+      for (const scope of Object.keys(out.matrix)) {
+        const row = out.matrix[scope] || {};
+        const newRow: Record<string, { status: string; price?: number | null }> = {};
+        for (const key of Object.keys(row)) {
+          const norm = reverseNameToId[key.toLowerCase?.() ? key.toLowerCase() : key] || key;
+          newRow[norm] = row[key]!;
+        }
+        newMatrix[scope] = newRow;
+      }
+      out.matrix = newMatrix;
+    }
+    if (out.qualifications && typeof out.qualifications === 'object') {
+      const newQ: NonNullable<Report['qualifications']> = {};
+      for (const key of Object.keys(out.qualifications)) {
+        const norm = reverseNameToId[key.toLowerCase?.() ? key.toLowerCase() : key] || key;
+        newQ[norm] = out.qualifications[key]!;
+      }
+      out.qualifications = newQ;
+    }
+    // Ensure contractors header is present
+    const curContractors = Array.isArray(out.contractors) ? out.contractors : [];
+    const byId = new Set(curContractors.map(c => c.contractor_id || 'unassigned'));
+    for (const c of canonicalContractors) {
+      const key = c.contractor_id || 'unassigned';
+      if (!byId.has(key)) curContractors.push({ contractor_id: c.contractor_id, name: c.name });
+    }
+    out.contractors = curContractors;
+    return out;
+  };
+
   const mergeReports = (acc: Report, cur: Report): Report => {
-    const out: Report = acc.contractors ? { ...acc } : { division_code: division || null, subdivision_id: subdivisionId || null, contractors: [], scope_items: [], matrix: {}, qualifications: {} };
+    const out: Report = acc.contractors ? { ...acc } : { division_code: division || null, subdivision_id: subdivisionId || null, contractors: [...canonicalContractors], scope_items: [], matrix: {}, qualifications: {} };
     const contractors = (cur.contractors || []);
     for (const c of contractors) {
       if (!out.contractors!.some(x => (x.contractor_id || 'unassigned') === (c.contractor_id || 'unassigned'))) out.contractors!.push(c);
@@ -243,8 +281,10 @@ Summarize qualifications: includes, excludes, allowances, alternates, payment te
     const block = Array.isArray(resp.content) ? (resp.content.find((b: unknown) => (typeof b === 'object' && b !== null && (b as { type?: string }).type === 'text' && typeof (b as { text?: unknown }).text === 'string')) as { type: string; text?: string } | undefined) : undefined;
     const text = block?.text || '{}';
     let parsed: Report = { division_code: division || null };
-    try { parsed = JSON.parse(text) as Report; } catch {}
-    merged = merged ? mergeReports(merged, parsed) : parsed;
+    const tryParse = (t: string): Report | null => { try { return JSON.parse(t) as Report; } catch { return null; } };
+    parsed = tryParse(text) || tryParse((text.match(/\{[\s\S]*\}/)?.[0] || '')) || { division_code: division || null };
+    parsed = normalizeContractorKeys(parsed);
+    merged = merged ? mergeReports(merged, parsed) : normalizeContractorKeys(parsed);
     done += 1;
     await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(95, Math.round((done / batches.length) * 90) + 5) }).eq('id', job.id);
     // dynamic inter-batch delay based on input size to respect 40k tokens/min
