@@ -147,9 +147,10 @@ export async function POST(req: NextRequest) {
     if (out.matrix && typeof out.matrix === 'object') {
       const newMatrix: Record<string, Record<string, { status: string; price?: number | null }>> = {};
       for (const scope of Object.keys(out.matrix as Record<string, unknown>)) {
-        const row = (out.matrix as Record<string, Record<string, { status: string; price?: number | null }>>)[scope] || {} as Record<string, { status: string; price?: number | null }>;
+        const rowObj = (out.matrix as Record<string, Record<string, { status: string; price?: number | null }> | undefined>)[scope];
+        const row: Record<string, { status: string; price?: number | null }> = rowObj ?? {};
         const newRow: Record<string, { status: string; price?: number | null }> = {};
-        for (const key of Object.keys(row)) {
+        for (const key of Object.keys(row as Record<string, unknown>)) {
           const normKey = key.toLowerCase();
           const norm = reverseNameToId[normKey] || key;
           newRow[norm] = row[key]!;
