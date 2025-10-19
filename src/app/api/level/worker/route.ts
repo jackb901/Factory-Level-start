@@ -180,71 +180,13 @@ export async function POST(req: NextRequest) {
     recommendation?: unknown;
   };
 
-  const normalizeContractorKeys = (rep: Report): Report => {
-    const out: Report = { ...rep };
-    if (out.matrix && typeof out.matrix === 'object') {
-      const newMatrix: Record<string, Record<string, { status: string; price?: number | null }>> = {};
-      for (const scope of Object.keys(out.matrix as Record<string, unknown>)) {
-        const rowObj = (out.matrix as Record<string, Record<string, { status: string; price?: number | null }> | undefined>)[scope];
-        const row: Record<string, { status: string; price?: number | null }> = rowObj ?? {};
-        const newRow: Record<string, { status: string; price?: number | null }> = {};
-        for (const key of Object.keys(row as Record<string, unknown>)) {
-          const normKey = key.toLowerCase();
-          const norm = reverseNameToId[normKey] || key;
-          newRow[norm] = row[key]!;
-        }
-        newMatrix[scope] = newRow;
-      }
-      out.matrix = newMatrix;
-    }
-    if (out.qualifications && typeof out.qualifications === 'object') {
-      const newQ: NonNullable<Report['qualifications']> = {};
-      for (const key of Object.keys(out.qualifications as Record<string, unknown>)) {
-        const normKey = key.toLowerCase();
-        const norm = reverseNameToId[normKey] || key;
-        newQ[norm] = (out.qualifications as NonNullable<Report['qualifications']>)[key]!;
-      }
-      out.qualifications = newQ;
-    }
-    // Ensure contractors header is present
-    const curContractors = Array.isArray(out.contractors) ? out.contractors : [];
-    const byId = new Set(curContractors.map(c => c.contractor_id || 'unassigned'));
-    for (const c of canonicalContractors) {
-      const key = c.contractor_id || 'unassigned';
-      if (!byId.has(key)) curContractors.push({ contractor_id: c.contractor_id, name: c.name });
-    }
-    out.contractors = curContractors;
-    return out;
-  };
+  // Removed old normalization and merge helpers (not used in new two-pass pipeline)
 
-  const mergeReports = (acc: Report, cur: Report): Report => {
-    const out: Report = acc.contractors ? { ...acc } : { division_code: division || null, subdivision_id: subdivisionId || null, contractors: [...canonicalContractors], scope_items: [], matrix: {}, qualifications: {} };
-    const contractors = (cur.contractors || []);
-    for (const c of contractors) {
-      if (!out.contractors!.some(x => (x.contractor_id || 'unassigned') === (c.contractor_id || 'unassigned'))) out.contractors!.push(c);
-    }
-    const scope = (cur.scope_items || []);
-    for (const s of scope) if (!out.scope_items!.includes(s)) out.scope_items!.push(s);
-    const m = cur.matrix || {};
-    for (const s of Object.keys(m)) {
-      out.matrix![s] = out.matrix![s] || {};
-      for (const cid of Object.keys(m[s]!)) out.matrix![s]![cid] = m[s]![cid];
-    }
-    const q = cur.qualifications || {};
-    for (const cid of Object.keys(q)) {
-      const t = out.qualifications![cid] || { includes: [], excludes: [], allowances: [], alternates: [], payment_terms: [], fine_print: [] };
-      const add = (k: keyof typeof t) => {
-        const src = q[cid] as Record<string, unknown> | undefined;
-        const vals = (src?.[k] as string[] | undefined);
-        if (Array.isArray(vals)) t[k] = Array.from(new Set([...(t[k] || []), ...vals]));
-      };
-      add('includes'); add('excludes'); add('allowances'); add('alternates'); add('payment_terms'); add('fine_print');
-      out.qualifications![cid] = t;
-    }
-    return out;
-  };
+  // (mergeReports no longer needed)
 
-  type PerContractor = { items: Array<{ name: string; status: 'included'|'excluded'|'not_specified'; price?: number|null; notes?: string }>; qualifications?: Report['qualifications'][string] };
+  type Qual = { includes?: string[]; excludes?: string[]; allowances?: string[]; alternates?: string[]; payment_terms?: string[]; fine_print?: string[] };
+  type PerItem = { name: string; status: 'included'|'excluded'|'not_specified'; price?: number|null; notes?: string };
+  type PerContractor = { items: Array<PerItem>; qualifications?: Qual };
   const per: Record<string, PerContractor> = {};
   let done = 0;
   for (const batch of batches) {
