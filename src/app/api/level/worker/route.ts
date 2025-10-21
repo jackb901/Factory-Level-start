@@ -165,6 +165,18 @@ export async function POST(req: NextRequest) {
     const moneyOrQty = /(\$\s?\d|\d+\s?(ea|each|qty|pcs?)\b)/i;
     return include.test(l) || moneyOrQty.test(l);
   };
+
+  const detectSection = (line: string): string | null => {
+    const l = line.toLowerCase().trim();
+    if (/\b(scope\s*of\s*work|scope)\b/.test(l)) return 'scope';
+    if (/\binclusions?\b/.test(l)) return 'inclusions';
+    if (/\bexclusions?\b/.test(l)) return 'exclusions';
+    if (/\ballowances?\b/.test(l)) return 'allowances';
+    if (/\balternates?\b/.test(l)) return 'alternates';
+    if (/(equipment\s*(list|schedule)|bill\s*of\s*materials|schedule\s*of\s*values)/.test(l)) return 'equipment';
+    if (/services|commissioning|testing\s*&?\s*balancing/.test(l)) return 'services';
+    return null;
+  };
   const extractCandidatesFromText = (name: string, text: string): string[] => {
     const out: string[] = [];
     // If it looks like a table CSV, take first column as scope candidates
@@ -179,11 +191,14 @@ export async function POST(req: NextRequest) {
     } else {
       // Bullet/section headers
       const lines = text.split(/\r?\n/);
+      let section: string | null = null;
       for (const line of lines) {
+        const sec = detectSection(line);
+        if (sec) { section = sec; continue; }
         const m = line.match(/^\s*(?:[-*•\u2022]|\d+\.|[A-Z][\w\s]{2,})\s*(.+)$/);
-        const cand = m ? m[1] : line;
-        if (!domainKeep(cand)) continue;
-        const n = normalizeScope(cand);
+        const candRaw = m ? m[1] : line;
+        if (!(section && domainKeep(candRaw))) continue; // only from recognized sections
+        const n = normalizeScope(candRaw);
         if (n && /[a-zA-Z]/.test(n) && n.length >= 3) out.push(n);
       }
     }
@@ -243,8 +258,15 @@ export async function POST(req: NextRequest) {
     for (const c of docs.texts) {
       if (accChars > 120_000) break; // ~30k tokens
       // Drop boilerplate noise; keep likely line-items
-      const raw = c.text;
-      const filtered = raw.split(/\r?\n/).filter(domainKeep).join('\n');
+      const lines = c.text.split(/\r?\n/);
+      let section: string | null = null;
+      const kept: string[] = [];
+      for (const line of lines) {
+        const sec = detectSection(line);
+        if (sec) { section = sec; kept.push(`-- SECTION: ${sec.toUpperCase()}`); continue; }
+        if (section && domainKeep(line)) kept.push(line);
+      }
+      const filtered = kept.join('\n');
       const snippet = filtered.length > 4000 ? filtered.slice(0, 4000) : filtered;
       const t: TextBlockParam = { type: 'text', text: `=== EXTRACT: ${c.name} ===\n${snippet}` };
       content.push(t);
@@ -287,7 +309,7 @@ export async function POST(req: NextRequest) {
       let attempt = 0;
       while (attempt < tries) {
         try {
-          return await anthropic.messages.create({ model: MODEL, max_tokens: 2800, temperature: 0.2, system, messages: [{ role: 'user', content }] } as unknown as Parameters<typeof anthropic.messages.create>[0]);
+          return await anthropic.messages.create({ model: MODEL, max_tokens: 2800, temperature: 0.2, response_format: { type: 'json_object' }, system, messages: [{ role: 'user', content }] } as unknown as Parameters<typeof anthropic.messages.create>[0]);
         } catch (e) {
           const msg = (e as Error).message || '';
           // backoff on rate limit
