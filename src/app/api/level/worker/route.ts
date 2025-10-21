@@ -309,7 +309,7 @@ export async function POST(req: NextRequest) {
       let attempt = 0;
       while (attempt < tries) {
         try {
-          return await anthropic.messages.create({ model: MODEL, max_tokens: 2800, temperature: 0.2, response_format: { type: 'json_object' }, system, messages: [{ role: 'user', content }] } as unknown as Parameters<typeof anthropic.messages.create>[0]);
+          return await anthropic.messages.create({ model: MODEL, max_tokens: 2800, temperature: 0.2, system, messages: [{ role: 'user', content }] } as unknown as Parameters<typeof anthropic.messages.create>[0]);
         } catch (e) {
           const msg = (e as Error).message || '';
           // backoff on rate limit
