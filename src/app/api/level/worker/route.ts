@@ -143,6 +143,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing ANTHROPIC_API_KEY' }, { status: 500 });
   }
   const anthropic = new Anthropic({ apiKey: anthropicKey });
+  const MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022';
   const scopeIndex = buildSynonymIndex(DIV23_SCOPE);
 
   // Build candidate scope items deterministically from extracted texts/tables
@@ -154,6 +155,16 @@ export async function POST(req: NextRequest) {
     if (skip.includes(lower)) return '';
     return t.length > 120 ? t.slice(0, 120) : t;
   };
+
+  const domainKeep = (line: string) => {
+    const l = line.toLowerCase();
+    if (!/[a-z]/.test(l)) return false;
+    const exclude = /(proposal|letterhead|address|phone|email|fax|license|terms|valid\s*for|covid|thank you|signature|receipt|drawings|architectural|mep|specifications|schedule\b|pricing\b|bid form|submittal log)/i;
+    if (exclude.test(l)) return false;
+    const include = /(hvac|vrf|vrv|air handler|ahu|fan coil|ton\b|cfm\b|mbh\b|duct|grille|diffuser|register|damper|exhaust|filter|insulation|refrigerant|condensate|controls|bms|bacnet|ddc|tab\b|testing|balancing|startup|commission|crane|rigging|bim|shop drawings|title 24|seismic|permit|inspection|controller|selector box|split system|vav|terminal unit)/i;
+    const moneyOrQty = /(\$\s?\d|\d+\s?(ea|each|qty|pcs?)\b)/i;
+    return include.test(l) || moneyOrQty.test(l);
+  };
   const extractCandidatesFromText = (name: string, text: string): string[] => {
     const out: string[] = [];
     // If it looks like a table CSV, take first column as scope candidates
@@ -161,6 +172,7 @@ export async function POST(req: NextRequest) {
       const lines = text.split(/\r?\n/);
       for (const line of lines) {
         const first = (line.split(',')[0] || '').trim();
+        if (!domainKeep(first)) continue;
         const n = normalizeScope(first);
         if (n && /[a-zA-Z]/.test(n) && n.length >= 2) out.push(n);
       }
@@ -170,6 +182,7 @@ export async function POST(req: NextRequest) {
       for (const line of lines) {
         const m = line.match(/^\s*(?:[-*•\u2022]|\d+\.|[A-Z][\w\s]{2,})\s*(.+)$/);
         const cand = m ? m[1] : line;
+        if (!domainKeep(cand)) continue;
         const n = normalizeScope(cand);
         if (n && /[a-zA-Z]/.test(n) && n.length >= 3) out.push(n);
       }
@@ -219,7 +232,7 @@ export async function POST(req: NextRequest) {
     const b = batch[0];
     let content: ContentBlockParam[] = [];
     const contractorName = b.contractor_id ? (contractorsMap[b.contractor_id] || 'Contractor') : 'Contractor';
-    const instruct: TextBlockParam = { type: 'text', text: `You are labeling scope coverage for a single contractor's bid. STRICT JSON ONLY.\nSCHEMA:{"items":[{"name":string,"status":"included"|"excluded"|"not_specified","price"?:number|null,"evidence":string}],"qualifications":{"includes"?:string[],"excludes"?:string[],"allowances"?:string[],"alternates"?:string[],"payment_terms"?:string[],"fine_print"?:string[]},"total"?:number|null,"unmapped":[{"name":string,"evidence":string,"confidence"?:number}]}\nRules:\n- ONLY choose item names that are EXACTLY present in CANDIDATE_SCOPE (case-insensitive). Do not invent new names.\n- If you find relevant scope not in the list, put it in 'unmapped' with a short evidence snippet and confidence 0..1; do not add it to 'items'.\n- When mapping differing wording (e.g., '40 ton AHU' vs '40 ton HVAC unit'), choose the closest candidate_scope item.\n- For each 'items' entry, include a brief evidence snippet (row text or nearby sentence).\n- Extract total/base bid if present; do not hallucinate prices.` };
+    const instruct: TextBlockParam = { type: 'text', text: `You are labeling scope coverage for a single contractor's bid. STRICT JSON ONLY.\nSCHEMA:{"items":[{"name":string,"status":"included"|"excluded"|"not_specified","price"?:number|null,"evidence":string}],"qualifications":{"includes"?:string[],"excludes"?:string[],"allowances"?:string[],"alternates"?:string[],"payment_terms"?:string[],"fine_print"?:string[]},"total"?:number|null,"unmapped":[{"name":string,"evidence":string,"confidence"?:number}]}\nRules:\n- ONLY choose item names that are EXACTLY present in CANDIDATE_SCOPE (case-insensitive). Do not invent new names.\n- If you find relevant scope not in the list, put it in 'unmapped' with a short evidence snippet and confidence 0..1; do not add it to 'items'.\n- Map differing wording to the closest candidate item (e.g., '40 ton AHU' → 'HVAC equipment' or 'VRF/VRV system' depending on context).\n- For each 'items' entry, include a brief evidence snippet (table row or nearby sentence with quantities/capacities/$).\n- Extract total/base bid if present; do not hallucinate prices.` };
     content.push(instruct);
     const candBlock: TextBlockParam = { type: 'text', text: `CANDIDATE_SCOPE (union across contractors):\n${candidateUnion.map((s,i)=>`${i+1}. ${s}`).join('\n')}` };
     content.push(candBlock);
@@ -231,12 +244,7 @@ export async function POST(req: NextRequest) {
       if (accChars > 120_000) break; // ~30k tokens
       // Drop boilerplate noise; keep likely line-items
       const raw = c.text;
-      const filtered = raw.split(/\r?\n/).filter(line => {
-        const l = line.toLowerCase();
-        if (!/[a-z]/.test(l)) return false;
-        if (/^(page\s*\d+|proposal|address:|phone:|fax:|email:|license|liability|terms|net\s*\d+|valid for|covid|thank you|signature|receipt)/.test(l)) return false;
-        return true;
-      }).join('\n');
+      const filtered = raw.split(/\r?\n/).filter(domainKeep).join('\n');
       const snippet = filtered.length > 4000 ? filtered.slice(0, 4000) : filtered;
       const t: TextBlockParam = { type: 'text', text: `=== EXTRACT: ${c.name} ===\n${snippet}` };
       content.push(t);
@@ -273,13 +281,13 @@ export async function POST(req: NextRequest) {
     };
 
     content = trimToBudget(content, 30_000);
-    const system = `You are a seasoned Construction Executive. Label scope coverage for one contractor bid against a provided candidate scope list. Use evidence from extracts; do not hallucinate prices.`;
+    const system = `You are a construction estimator building a Division-level bid leveling matrix. Ignore letterheads, addresses, and proposal boilerplate. Focus on Scope of Work, Inclusions/Exclusions/Alternates/Allowances, equipment lists and SOV tables. Strict JSON only.`;
 
     const callClaudeWithRetry = async (tries = 4) => {
       let attempt = 0;
       while (attempt < tries) {
         try {
-          return await anthropic.messages.create({ model: 'claude-3-5-sonnet-20241022', max_tokens: 2800, temperature: 0.2, system, messages: [{ role: 'user', content }] });
+          return await anthropic.messages.create({ model: MODEL, max_tokens: 2800, temperature: 0.2, system, messages: [{ role: 'user', content }] } as unknown as Parameters<typeof anthropic.messages.create>[0]);
         } catch (e) {
           const msg = (e as Error).message || '';
           // backoff on rate limit
