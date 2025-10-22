@@ -217,6 +217,35 @@ export async function POST(req: NextRequest) {
   }
   const candidateUnion = canonicalCandidates.slice(0, 300);
 
+  // Aggregator pass: ask model to propose unified candidate scope from all bids
+  try {
+    const aggContent: ContentBlockParam[] = [];
+    const aggIntro: TextBlockParam = { type: 'text', text: `You will propose a unified list of scope items for Division ${division || ''}. ONLY output JSON: {"scope_items": string[]} using canonical HVAC terms. Use evidence below; ignore addresses/boilerplate. Do not include totals or qualifications.` };
+    aggContent.push(aggIntro);
+    let aggChars = 0;
+    for (const b of bidList) {
+      aggContent.push({ type: 'text', text: `--- Contractor bid ${b.id} ---` });
+      const docs = byBidDocs[b.id] || { texts: [] };
+      for (const t of docs.texts) {
+        if (aggChars > 160_000) break;
+        const slice = t.text.length > 3000 ? t.text.slice(0, 3000) : t.text;
+        aggContent.push({ type: 'text', text: `EXTRACT: ${t.name}\n${slice}` });
+        aggChars += slice.length;
+      }
+    }
+    const aggSystem = `You are a construction estimator. From multiple bids, propose a clean unified list of HVAC scope items (15-80 items max). Use concise canonical names; ignore boilerplate.`;
+    const aggResp = await anthropic.messages.create({ model: MODEL, max_tokens: 1200, temperature: 0.1, system: aggSystem, messages: [{ role: 'user', content: aggContent }] } as unknown as Parameters<typeof anthropic.messages.create>[0]);
+    const aggMsg = aggResp as unknown as { content?: Array<{ type: string; text?: string }> };
+    const aggText = (Array.isArray(aggMsg.content) ? (aggMsg.content.find((b: unknown) => (typeof b === 'object' && b !== null && (b as { type?: string }).type === 'text')) as { type: string; text?: string } | undefined)?.text || '' : '') as string;
+    const aggParsed = (() => { try { return JSON.parse(aggText) as { scope_items?: string[] }; } catch { try { return JSON.parse((aggText.match(/\{[\s\S]*\}/)?.[0] || '{}')) as { scope_items?: string[] }; } catch { return { scope_items: [] }; } } })();
+    const proposed = Array.isArray(aggParsed.scope_items) ? aggParsed.scope_items : [];
+    for (const s of proposed) {
+      const canon = canonize(scopeIndex, s) || s;
+      if (!canonicalCandidates.includes(canon)) canonicalCandidates.push(canon);
+    }
+  } catch {}
+  const candidateUnionFinal = canonicalCandidates.slice(0, 300);
+
   const batches: typeof bidList[] = [];
   for (let i = 0; i < bidList.length; i += LIMITS.batchSize) batches.push(bidList.slice(i, i + LIMITS.batchSize));
   await supabase.from('processing_jobs').update({ batches_total: batches.length }).eq('id', job.id);
@@ -249,7 +278,7 @@ export async function POST(req: NextRequest) {
     const contractorName = b.contractor_id ? (contractorsMap[b.contractor_id] || 'Contractor') : 'Contractor';
     const instruct: TextBlockParam = { type: 'text', text: `You are labeling scope coverage for a single contractor's bid. STRICT JSON ONLY.\nSCHEMA:{"items":[{"name":string,"status":"included"|"excluded"|"not_specified","price"?:number|null,"evidence":string}],"qualifications":{"includes"?:string[],"excludes"?:string[],"allowances"?:string[],"alternates"?:string[],"payment_terms"?:string[],"fine_print"?:string[]},"total"?:number|null,"unmapped":[{"name":string,"evidence":string,"confidence"?:number}]}\nRules:\n- ONLY choose item names that are EXACTLY present in CANDIDATE_SCOPE (case-insensitive). Do not invent new names.\n- If you find relevant scope not in the list, put it in 'unmapped' with a short evidence snippet and confidence 0..1; do not add it to 'items'.\n- Map differing wording to the closest candidate item (e.g., '40 ton AHU' → 'HVAC equipment' or 'VRF/VRV system' depending on context).\n- For each 'items' entry, include a brief evidence snippet (table row or nearby sentence with quantities/capacities/$).\n- Extract total/base bid if present; do not hallucinate prices.` };
     content.push(instruct);
-    const candBlock: TextBlockParam = { type: 'text', text: `CANDIDATE_SCOPE (union across contractors):\n${candidateUnion.map((s,i)=>`${i+1}. ${s}`).join('\n')}` };
+    const candBlock: TextBlockParam = { type: 'text', text: `CANDIDATE_SCOPE (unified across all bids):\n${candidateUnionFinal.map((s,i)=>`${i+1}. ${s}`).join('\n')}` };
     content.push(candBlock);
     content.push({ type: 'text', text: `--- Contractor: ${contractorName} (id ${b.contractor_id || 'unassigned'}) ---` });
     const docs = byBidDocs[b.id] || { texts: [] };
@@ -343,7 +372,7 @@ export async function POST(req: NextRequest) {
       if (mapped) it.name = mapped;
     }
     // Enforce candidate_scope only; move others to unmapped
-    const candidateSet = new Set(candidateUnion.map(s => normalizeScope(s)));
+    const candidateSet = new Set(candidateUnionFinal.map(s => normalizeScope(s)));
     const kept: PerItem[] = [];
     const dropped: Unmapped[] = [];
     for (const it of items) {
