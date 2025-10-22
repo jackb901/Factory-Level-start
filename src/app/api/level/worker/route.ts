@@ -146,6 +146,25 @@ export async function POST(req: NextRequest) {
   const MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022';
   const scopeIndex = buildSynonymIndex(DIV23_SCOPE);
 
+  // Utilities to parse totals from evidence text
+  const parseMoney = (s: string): number | null => {
+    const cleaned = s.replace(/[,\s]/g, '');
+    const m = cleaned.match(/\$?(\d+(?:\.\d{2})?)/);
+    if (!m) return null;
+    const n = Number(m[1]);
+    return Number.isFinite(n) ? n : null;
+  };
+  const findTotalInText = (text: string): number | null => {
+    const re = /(base\s*bid|total(?:\s*(?:price|amount))?|bid\s*amount)\s*[:\-]?\s*\$?\s*([0-9][\d,]*(?:\.\d{2})?)/gi;
+    let best: number | null = null;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const val = parseMoney(m[2] || '');
+      if (val != null) best = val; // keep last seen
+    }
+    return best;
+  };
+
   // Build candidate scope items deterministically from extracted texts/tables
   const normalizeScope = (s: string) => {
     const t = s.replace(/[_\-\t]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -267,7 +286,7 @@ export async function POST(req: NextRequest) {
   type Qual = { includes?: string[]; excludes?: string[]; allowances?: string[]; alternates?: string[]; payment_terms?: string[]; fine_print?: string[] };
   type PerItem = { name: string; status: 'included'|'excluded'|'not_specified'; price?: number|null; notes?: string };
   type Unmapped = { name: string; evidence: string; confidence?: number };
-  type PerContractor = { items: Array<PerItem>; qualifications?: Qual; unmapped?: Unmapped[] };
+  type PerContractor = { items: Array<PerItem>; qualifications?: Qual; unmapped?: Unmapped[]; total?: number | null };
   const per: Record<string, PerContractor> = {};
   const unmappedPer: Record<string, Unmapped[]> = {};
   let done = 0;
@@ -284,6 +303,7 @@ export async function POST(req: NextRequest) {
     const docs = byBidDocs[b.id] || { texts: [] };
     // Limit evidence to ~30k tokens worth of chars
     let accChars = 0;
+    let combinedEvidence = '';
     for (const c of docs.texts) {
       if (accChars > 120_000) break; // ~30k tokens
       // Drop boilerplate noise; keep likely line-items
@@ -300,7 +320,9 @@ export async function POST(req: NextRequest) {
       const t: TextBlockParam = { type: 'text', text: `=== EXTRACT: ${c.name} ===\n${snippet}` };
       content.push(t);
       accChars += t.text.length;
+      combinedEvidence += '\n' + snippet;
     }
+    const detectedTotal = combinedEvidence ? findTotalInText(combinedEvidence) : null;
 
     // Token budget: approx tokens ~= chars/4. Trim content to stay below ~30k input tokens.
     const estTokens = (blocks: ContentBlockParam[]) => {
@@ -380,7 +402,7 @@ export async function POST(req: NextRequest) {
       if (candidateSet.has(normalizeScope(it.name))) kept.push(it); else dropped.push({ name: it.name, evidence: ev });
     }
     const cidKey = b.contractor_id || 'unassigned';
-    per[cidKey] = { items: kept, qualifications: parsed.qualifications, unmapped: parsed.unmapped };
+    per[cidKey] = { items: kept, qualifications: parsed.qualifications, unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
     unmappedPer[cidKey] = [...(parsed.unmapped || []), ...dropped];
     done += 1;
     await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(90, Math.round((done / batches.length) * 85) + 5) }).eq('id', job.id);
@@ -401,7 +423,7 @@ export async function POST(req: NextRequest) {
       const cid = b.contractor_id || 'unassigned';
       const arr = per[cid]?.items || [];
       const found = arr.find((it: { name: string; status?: 'included'|'excluded'|'not_specified'; price?: number|null }) => normalizeScope(it.name) === s);
-      matrix[s][cid] = { status: (found?.status || 'not_specified'), price: typeof found?.price === 'number' ? found?.price : null };
+      matrix[s][cid] = { status: (found?.status || 'excluded'), price: typeof found?.price === 'number' ? found?.price : null };
     }
   }
   const quals: NonNullable<Report['qualifications']> = {};
@@ -422,9 +444,7 @@ export async function POST(req: NextRequest) {
     const cid = c.contractor_id || 'unassigned';
     let total: number | null = null;
     const items = per[cid]?.items || [];
-    // try explicit total parsed by the model
-    // @ts-expect-error: total may be provided in qualifications as note later; otherwise compute sum
-    if (typeof (per[cid]?.total) === 'number') total = per[cid]?.total as unknown as number;
+    if (typeof (per[cid]?.total) === 'number') total = per[cid]?.total as number;
     if (total == null) {
       const sum = items.reduce((acc, it) => acc + ((it.status === 'included' && typeof it.price === 'number') ? it.price : 0), 0);
       total = sum > 0 ? sum : null;
