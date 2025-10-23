@@ -187,13 +187,13 @@ export async function POST(req: NextRequest) {
 
   const detectSection = (line: string): string | null => {
     const l = line.toLowerCase().trim();
-    if (/\b(scope\s*of\s*work|scope)\b/.test(l)) return 'scope';
-    if (/\binclusions?\b/.test(l)) return 'inclusions';
-    if (/\bexclusions?\b/.test(l)) return 'exclusions';
-    if (/\ballowances?\b/.test(l)) return 'allowances';
-    if (/\balternates?\b/.test(l)) return 'alternates';
+    if (/(\bscope\b|scope\s*of\s*work|^\s*sco?pe)/.test(l)) return 'scope';
+    if (/(\binclusions?\b|^\s*inclu\w*|^\s*inclusio\w*)/.test(l)) return 'inclusions';
+    if (/(\bexclusions?\b|^\s*exclu\w*)/.test(l)) return 'exclusions';
+    if (/(\ballowances?\b|^\s*allowan\w*)/.test(l)) return 'allowances';
+    if (/(\balternates?\b|^\s*alternat\w*)/.test(l)) return 'alternates';
     if (/(equipment\s*(list|schedule)|bill\s*of\s*materials|schedule\s*of\s*values)/.test(l)) return 'equipment';
-    if (/services|commissioning|testing\s*&?\s*balancing/.test(l)) return 'services';
+    if (/\bservices\b|commissioning|testing\s*&?\s*balancing/.test(l)) return 'services';
     return null;
   };
   const extractCandidatesFromText = (name: string, text: string): string[] => {
@@ -216,6 +216,8 @@ export async function POST(req: NextRequest) {
         if (sec) { section = sec; continue; }
         const m = line.match(/^\s*(?:[-*•\u2022]|\d+\.|[A-Z][\w\s]{2,})\s*(.+)$/);
         const candRaw = m ? m[1] : line;
+        // skip totals lines as scope candidates
+        if (/(^|\b)(base\s*bid|total(?:\s*(?:price|amount))?|bid\s*amount)\b/i.test(candRaw)) continue;
         if (!(section && domainKeep(candRaw))) continue; // only from recognized sections
         const n = normalizeScope(candRaw);
         if (n && /[a-zA-Z]/.test(n) && n.length >= 3) out.push(n);
@@ -313,7 +315,8 @@ export async function POST(req: NextRequest) {
       for (const line of lines) {
         const sec = detectSection(line);
         if (sec) { section = sec; kept.push(`-- SECTION: ${sec.toUpperCase()}`); continue; }
-        if (section && domainKeep(line)) kept.push(line);
+        // Keep high-signal lines even if a section header wasn't reliably detected
+        if (domainKeep(line) || (section && domainKeep(line))) kept.push(line);
       }
       const filtered = kept.join('\n');
       const snippet = filtered.length > 4000 ? filtered.slice(0, 4000) : filtered;
@@ -428,7 +431,8 @@ export async function POST(req: NextRequest) {
   }
 
   // Merge pass → final division-level report
-  const scopeSet = new Set<string>(candidateUnion);
+  // Use the final unified candidate scope (after Pass 1 + canonicalization)
+  const scopeSet = new Set<string>(candidateUnionFinal);
   Object.values(per).forEach(p => (p.items || []).forEach(it => { const n = normalizeScope(it.name || ''); if (n) scopeSet.add(n); }));
   const scopeItems = Array.from(scopeSet);
   const matrix: NonNullable<Report['matrix']> = {};
