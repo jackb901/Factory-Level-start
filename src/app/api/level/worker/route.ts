@@ -295,7 +295,7 @@ export async function POST(req: NextRequest) {
     const b = batch[0];
     let content: ContentBlockParam[] = [];
     const contractorName = b.contractor_id ? (contractorsMap[b.contractor_id] || 'Contractor') : 'Contractor';
-    const instruct: TextBlockParam = { type: 'text', text: `You are labeling scope coverage for a single contractor's bid. STRICT JSON ONLY.\nSCHEMA:{"items":[{"name":string,"status":"included"|"excluded"|"not_specified","price"?:number|null,"evidence":string}],"qualifications":{"includes"?:string[],"excludes"?:string[],"allowances"?:string[],"alternates"?:string[],"payment_terms"?:string[],"fine_print"?:string[]},"total"?:number|null,"unmapped":[{"name":string,"evidence":string,"confidence"?:number}]}\nRules:\n- ONLY choose item names that are EXACTLY present in CANDIDATE_SCOPE (case-insensitive). Do not invent new names.\n- If you find relevant scope not in the list, put it in 'unmapped' with a short evidence snippet and confidence 0..1; do not add it to 'items'.\n- Map differing wording to the closest candidate item (e.g., '40 ton AHU' → 'HVAC equipment' or 'VRF/VRV system' depending on context).\n- For each 'items' entry, include a brief evidence snippet (table row or nearby sentence with quantities/capacities/$).\n- Extract total/base bid if present; do not hallucinate prices.` };
+    const instruct: TextBlockParam = { type: 'text', text: `You are labeling scope coverage for a single contractor's bid. STRICT JSON ONLY.\nSCHEMA:{"items":[{"name":string,"status":"included"|"excluded"|"not_specified","price"?:number|null,"evidence":string}],"qualifications":{"includes"?:string[],"excludes"?:string[],"allowances"?:string[],"alternates"?:string[],"payment_terms"?:string[],"fine_print"?:string[]},"total"?:number|null,"unmapped":[{"name":string,"evidence":string,"confidence"?:number}]}\nRules:\n- ONLY choose item names that are EXACTLY present in CANDIDATE_SCOPE (case-insensitive). Do not invent new names.\n- If you find relevant scope not in the list, put it in 'unmapped' with a short evidence snippet and confidence 0..1; do not add it to 'items'.\n- Map differing wording to the closest candidate item (e.g., '40 ton AHU' → 'HVAC equipment' or 'VRF/VRV system' depending on context).\n- CRITICAL status rules: 'included' = explicitly provided OR present in general scope; 'excluded' = explicitly listed as not provided; 'not_specified' = not mentioned at all. Do NOT assume exclusion when silent.\n- For each 'items' entry, include a brief evidence snippet (table row or nearby sentence with quantities/capacities/$).\n- Extract total/base bid if present; do not hallucinate prices.` };
     content.push(instruct);
     const candBlock: TextBlockParam = { type: 'text', text: `CANDIDATE_SCOPE (unified across all bids):\n${candidateUnionFinal.map((s,i)=>`${i+1}. ${s}`).join('\n')}` };
     content.push(candBlock);
@@ -354,6 +354,20 @@ export async function POST(req: NextRequest) {
     };
 
     content = trimToBudget(content, 30_000);
+    // DEBUG: visibility into inputs and scope fed to the model
+    try {
+      const evidenceChars = (content as ContentBlockParam[]).reduce((acc, b) => acc + (b.type === 'text' ? ((b as TextBlockParam).text?.length || 0) : 0), 0);
+      // Only log limited preview to avoid leaking large payloads
+      const preview = (content as ContentBlockParam[])
+        .filter(b => b.type === 'text')
+        .slice(0, 5)
+        .map(b => (b as TextBlockParam).text?.slice(0, 300) || '')
+        .join('\n---\n');
+      console.log('[level/worker] scope_count', candidateUnionFinal.length);
+      console.log('[level/worker] scope_sample', candidateUnionFinal.slice(0, 25));
+      console.log('[level/worker] evidence_chars', evidenceChars);
+      console.log('[level/worker] evidence_preview', preview);
+    } catch {}
     const system = `You are a construction estimator building a Division-level bid leveling matrix. Ignore letterheads, addresses, and proposal boilerplate. Focus on Scope of Work, Inclusions/Exclusions/Alternates/Allowances, equipment lists and SOV tables. Strict JSON only.`;
 
     const callClaudeWithRetry = async (tries = 4) => {
@@ -401,6 +415,7 @@ export async function POST(req: NextRequest) {
       const ev = (typeof (it as unknown as { evidence?: string }).evidence === 'string') ? (it as unknown as { evidence?: string }).evidence as string : '';
       if (candidateSet.has(normalizeScope(it.name))) kept.push(it); else dropped.push({ name: it.name, evidence: ev });
     }
+    try { console.log('[level/worker] kept_vs_total', kept.length, '/', items.length); } catch {}
     const cidKey = b.contractor_id || 'unassigned';
     per[cidKey] = { items: kept, qualifications: parsed.qualifications, unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
     unmappedPer[cidKey] = [...(parsed.unmapped || []), ...dropped];
@@ -423,7 +438,8 @@ export async function POST(req: NextRequest) {
       const cid = b.contractor_id || 'unassigned';
       const arr = per[cid]?.items || [];
       const found = arr.find((it: { name: string; status?: 'included'|'excluded'|'not_specified'; price?: number|null }) => normalizeScope(it.name) === s);
-      matrix[s][cid] = { status: (found?.status || 'excluded'), price: typeof found?.price === 'number' ? found?.price : null };
+      // Default to not_specified unless the model explicitly sets included/excluded
+      matrix[s][cid] = { status: (found?.status || 'not_specified'), price: typeof found?.price === 'number' ? found?.price : null };
     }
   }
   const quals: NonNullable<Report['qualifications']> = {};
