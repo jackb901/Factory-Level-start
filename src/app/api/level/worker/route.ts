@@ -299,6 +299,20 @@ export async function POST(req: NextRequest) {
   type PerContractor = { items: Array<PerItem>; qualifications?: Qual; unmapped?: Unmapped[]; total?: number | null };
   const per: Record<string, PerContractor> = {};
   const unmappedPer: Record<string, Unmapped[]> = {};
+
+  // Build a map from canonical normalized scope name -> the candidate scope string we will display
+  const candidateNormToDisplay = new Map<string,string>();
+  for (const s of candidateUnionFinal) {
+    const canon = canonize(scopeIndex, s) || s;
+    const norm = normalizeScope(canon);
+    if (norm) candidateNormToDisplay.set(norm, s);
+  }
+  const mapToCandidate = (name: string): string | null => {
+    const canon = canonize(scopeIndex, name) || name;
+    const norm = normalizeScope(canon);
+    if (!norm) return null;
+    return candidateNormToDisplay.get(norm) || null;
+  };
   let done = 0;
   for (const batch of batches) {
     // batchSize=1 → single contractor per loop
@@ -438,8 +452,8 @@ export async function POST(req: NextRequest) {
     const block = Array.isArray(msg.content) ? (msg.content.find((b: unknown) => (typeof b === 'object' && b !== null && (b as { type?: string }).type === 'text' && typeof (b as { text?: unknown }).text === 'string')) as { type: string; text?: string } | undefined) : undefined;
     const text = block?.text || '{}';
     const tryParse = (t: string) => { try { return JSON.parse(t) as { items?: PerItem[]; qualifications?: Qual; total?: number|null; unmapped?: Unmapped[] }; } catch { return null; } };
-    const parsed = tryParse(text) || tryParse((text.match(/\{[\s\S]*\}/)?.[0] || '')) || { items: [], qualifications: {}, total: null, unmapped: [] } as { items?: PerItem[]; qualifications?: Qual; total?: number|null; unmapped?: Unmapped[] };
-    const items = Array.isArray(parsed.items) ? parsed.items.filter(x => typeof x?.name === 'string' && typeof x?.status === 'string') : [];
+    let parsed = tryParse(text) || tryParse((text.match(/\{[\s\S]*\}/)?.[0] || '')) || { items: [], qualifications: {}, total: null, unmapped: [] } as { items?: PerItem[]; qualifications?: Qual; total?: number|null; unmapped?: Unmapped[] };
+    let items = Array.isArray(parsed.items) ? parsed.items.filter(x => typeof x?.name === 'string' && typeof x?.status === 'string') : [];
     // Canonicalize item names to dictionary
     for (const it of items) {
       const mapped = canonize(scopeIndex, it.name);
@@ -451,7 +465,15 @@ export async function POST(req: NextRequest) {
     const dropped: Unmapped[] = [];
     for (const it of items) {
       const ev = (typeof (it as unknown as { evidence?: string }).evidence === 'string') ? (it as unknown as { evidence?: string }).evidence as string : '';
-      if (candidateSet.has(normalizeScope(it.name))) kept.push(it); else dropped.push({ name: it.name, evidence: ev });
+      const mappedDisplay = mapToCandidate(it.name);
+      if (mappedDisplay) {
+        it.name = mappedDisplay; // align to displayed candidate row
+        kept.push(it);
+      } else if (candidateSet.has(normalizeScope(it.name))) {
+        kept.push(it);
+      } else {
+        dropped.push({ name: it.name, evidence: ev });
+      }
     }
     try { console.log('[level/worker] kept_vs_total', kept.length, '/', items.length); } catch {}
     // Persist raw response preview for audit
@@ -461,8 +483,48 @@ export async function POST(req: NextRequest) {
       const prevDebug = (currentMeta.debug || {}) as Record<string, unknown>;
       await supabase.from('processing_jobs').update({ meta: { ...currentMeta, debug: { ...prevDebug, raw_response_preview: rawPreview } } }).eq('id', job.id);
     } catch {}
+
+    // If model returned zero items, retry once with fully lenient evidence (raw cleaned text blocks)
+    if (kept.length === 0 && items.length === 0) {
+      try { console.log('[level/worker] retry_lenient', true); } catch {}
+      const content2: ContentBlockParam[] = [];
+      content2.push(instruct);
+      content2.push({ type: 'text', text: `CANDIDATE_SCOPE (unified across all bids):\n${candidateUnionFinal.map((s,i)=>`${i+1}. ${s}`).join('\n')}` });
+      content2.push({ type: 'text', text: `--- Contractor: ${contractorName} (id ${b.contractor_id || 'unassigned'}) ---` });
+      let acc2 = 0;
+      for (const c of docs.texts) {
+        if (acc2 > 160_000) break;
+        const raw = cleanEvidence(c.text);
+        const add = raw.slice(0, 4000);
+        content2.push({ type: 'text', text: `=== RAW EXTRACT (retry): ${c.name} ===\n${add}` });
+        acc2 += add.length;
+      }
+      try {
+        const r2 = await callClaudeWithRetry();
+        const m2 = r2 as unknown as { content?: Array<{ type: string; text?: string }> };
+        const blk2 = Array.isArray(m2.content) ? (m2.content.find((bb: unknown) => (typeof bb === 'object' && bb !== null && (bb as { type?: string }).type === 'text' && typeof (bb as { text?: unknown }).text === 'string')) as { type: string; text?: string } | undefined) : undefined;
+        const txt2 = blk2?.text || '{}';
+        parsed = tryParse(txt2) || tryParse((txt2.match(/\{[\s\S]*\}/)?.[0] || '')) || { items: [], qualifications: {}, total: null, unmapped: [] } as { items?: PerItem[]; qualifications?: Qual; total?: number|null; unmapped?: Unmapped[] };
+        items = Array.isArray(parsed.items) ? parsed.items.filter(x => typeof x?.name === 'string' && typeof x?.status === 'string') : [];
+        const kept2: PerItem[] = [];
+        const dropped2: Unmapped[] = [];
+        for (const it of items) {
+          const ev = (typeof (it as unknown as { evidence?: string }).evidence === 'string') ? (it as unknown as { evidence?: string }).evidence as string : '';
+          const mappedDisplay = mapToCandidate(it.name);
+          if (mappedDisplay) { it.name = mappedDisplay; kept2.push(it); }
+          else if (candidateSet.has(normalizeScope(it.name))) kept2.push(it);
+          else dropped2.push({ name: it.name, evidence: ev });
+        }
+        if (kept2.length > 0) {
+          items = kept2;
+        } else {
+          items = [];
+        }
+        try { console.log('[level/worker] kept_vs_total_retry', items.length, '/', (parsed.items || []).length); } catch {}
+      } catch {}
+    }
     const cidKey = b.contractor_id || 'unassigned';
-    per[cidKey] = { items: kept, qualifications: parsed.qualifications, unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
+    per[cidKey] = { items: items, qualifications: parsed.qualifications, unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
     unmappedPer[cidKey] = [...(parsed.unmapped || []), ...dropped];
     done += 1;
     await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(90, Math.round((done / batches.length) * 85) + 5) }).eq('id', job.id);
