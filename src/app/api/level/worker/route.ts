@@ -185,22 +185,26 @@ export async function POST(req: NextRequest) {
   const domainKeep = (line: string) => {
     const l = line.toLowerCase();
     if (!/[a-z]/.test(l)) return false;
-    const exclude = /(proposal|letterhead|address|phone|email|fax|license|terms|valid\s*for|covid|thank you|signature|receipt|drawings|architectural|mep|specifications|schedule\b|pricing\b|bid form|submittal log)/i;
+    const exclude = /(proposal|letterhead|address|phone|email|fax|license|terms|valid\s*for|covid|thank you|signature|receipt|submittal log)/i;
     if (exclude.test(l)) return false;
-    const include = /(hvac|vrf|vrv|air handler|ahu|fan coil|ton\b|cfm\b|mbh\b|duct|grille|diffuser|register|damper|exhaust|filter|insulation|refrigerant|condensate|controls|bms|bacnet|ddc|tab\b|testing|balancing|startup|commission|crane|rigging|bim|shop drawings|title 24|seismic|permit|inspection|controller|selector box|split system|vav|terminal unit)/i;
-    const moneyOrQty = /(\$\s?\d|\d+\s?(ea|each|qty|pcs?)\b)/i;
-    return include.test(l) || moneyOrQty.test(l);
+    // Relaxed: keep if mentions equipment, work items, or has money/qty - expanded patterns
+    const include = /(hvac|vrf|vrv|air handler|ahu|fan coil|ton\b|cfm\b|mbh\b|duct|grille|diffuser|register|damper|exhaust|filter|insulation|refrigerant|condensate|controls|bms|bacnet|ddc|tab\b|testing|balancing|startup|commission|crane|rigging|bim|shop drawings|title 24|seismic|permit|inspection|controller|selector box|split system|vav|terminal unit|equipment|piping|mechanical|installation|labor|material|service|maintenance|warranty|coordination|supervision|documentation|as-built|firestopping|hoisting|rental)/i;
+    const moneyOrQty = /(\$\s?\d|\d+\s?(ea|each|qty|pcs?|sf|lf|sy|cy|cf|ls)\b)/i;
+    // Keep any line in a recognized section with reasonable length
+    const hasSubstantialText = l.length >= 10 && l.length <= 200;
+    return include.test(l) || moneyOrQty.test(l) || hasSubstantialText;
   };
 
   const detectSection = (line: string): string | null => {
     const l = line.toLowerCase().trim();
-    if (/(\bscope\b|scope\s*of\s*work|^\s*sco?pe)/.test(l)) return 'scope';
-    if (/(\binclusions?\b|^\s*inclu\w*|^\s*inclusio\w*)/.test(l)) return 'inclusions';
-    if (/(\bexclusions?\b|^\s*exclu\w*)/.test(l)) return 'exclusions';
+    // More flexible section detection patterns
+    if (/(\bscope\b|scope\s*of\s*work|^\s*sco?pe|general\s*(mechanical|hvac)\s*inclusions?|^\s*work\s*included?)/.test(l)) return 'scope';
+    if (/(\binclusions?\b|^\s*inclu\w*|^\s*inclusio\w*|^\s*included?\b|what'?s?\s*included)/.test(l)) return 'inclusions';
+    if (/(\bexclusions?\b|^\s*exclu\w*|^\s*excluded?\b|not\s*included|what'?s?\s*excluded)/.test(l)) return 'exclusions';
     if (/(\ballowances?\b|^\s*allowan\w*)/.test(l)) return 'allowances';
-    if (/(\balternates?\b|^\s*alternat\w*)/.test(l)) return 'alternates';
-    if (/(equipment\s*(list|schedule)|bill\s*of\s*materials|schedule\s*of\s*values)/.test(l)) return 'equipment';
-    if (/\bservices\b|commissioning|testing\s*&?\s*balancing/.test(l)) return 'services';
+    if (/(\balternates?\b|^\s*alternat\w*|^\s*options?\b)/.test(l)) return 'alternates';
+    if (/(equipment\s*(list|schedule)|bill\s*of\s*materials|schedule\s*of\s*values|materials\s*list)/.test(l)) return 'equipment';
+    if (/(\bservices\b|commissioning|testing\s*&?\s*balancing|^\s*clarifications?\b|^\s*notes?\b)/.test(l)) return 'services';
     return null;
   };
   const extractCandidatesFromText = (name: string, text: string): string[] => {
@@ -319,7 +323,7 @@ export async function POST(req: NextRequest) {
     const b = batch[0];
     let content: ContentBlockParam[] = [];
     const contractorName = b.contractor_id ? (contractorsMap[b.contractor_id] || 'Contractor') : 'Contractor';
-    const instruct: TextBlockParam = { type: 'text', text: `You are labeling scope coverage for a single contractor's bid. STRICT JSON ONLY.\nSCHEMA:{"items":[{"name":string,"status":"included"|"excluded"|"not_specified","price"?:number|null,"evidence":string}],"qualifications":{"includes"?:string[],"excludes"?:string[],"allowances"?:string[],"alternates"?:string[],"payment_terms"?:string[],"fine_print"?:string[]},"total"?:number|null,"unmapped":[{"name":string,"evidence":string,"confidence"?:number}]}\nRules:\n- ONLY choose item names that are EXACTLY present in CANDIDATE_SCOPE (case-insensitive). Do not invent new names.\n- If you find relevant scope not in the list, put it in 'unmapped' with a short evidence snippet and confidence 0..1; do not add it to 'items'.\n- Map differing wording to the closest candidate item (e.g., '40 ton AHU' → 'HVAC equipment' or 'VRF/VRV system' depending on context).\n- CRITICAL status rules: 'included' = explicitly provided OR present in general scope; 'excluded' = explicitly listed as not provided; 'not_specified' = not mentioned at all. Do NOT assume exclusion when silent.\n- For each 'items' entry, include a brief evidence snippet (table row or nearby sentence with quantities/capacities/$).\n- Extract total/base bid if present; do not hallucinate prices.` };
+    const instruct: TextBlockParam = { type: 'text', text: `You are labeling scope coverage for a single contractor's bid. STRICT JSON ONLY.\nSCHEMA:{"items":[{"name":string,"status":"included"|"excluded"|"not_specified","price"?:number|null,"evidence":string}],"qualifications":{"includes"?:string[],"excludes"?:string[],"allowances"?:string[],"alternates"?:string[],"payment_terms"?:string[],"fine_print"?:string[]},"total"?:number|null,"unmapped":[{"name":string,"evidence":string,"confidence"?:number}]}\nRules:\n- ONLY choose item names that are EXACTLY present in CANDIDATE_SCOPE (case-insensitive). Do not invent new names.\n- If you find relevant scope not in the list, put it in 'unmapped' with a short evidence snippet and confidence 0..1; do not add it to 'items'.\n- Map differing wording to the closest candidate item (e.g., '40 ton AHU' → 'HVAC equipment' or 'VRF/VRV system' depending on context).\n- CRITICAL status rules:\n  * 'included' = item is explicitly provided, mentioned in scope/inclusions sections, or present in equipment lists/pricing tables\n  * 'excluded' = ONLY when the specific item appears under an "EXCLUSIONS" section header or is explicitly stated as "not included"\n  * 'not_specified' = item is not mentioned anywhere in the bid documents\n  * DEFAULT to 'not_specified' for items not mentioned - do NOT mark as 'excluded' unless explicitly excluded\n  * If a contractor has an exclusions list, ONLY mark those specific items as 'excluded', not everything else\n  * When you see "-- SECTION: EXCLUSIONS", only items listed in that section are excluded\n- For each 'items' entry, include a brief evidence snippet (table row or nearby sentence with quantities/capacities/$).\n- Extract total/base bid if present; do not hallucinate prices.\n- In qualifications.excludes, list the actual exclusion text from the bid.` };
     content.push(instruct);
     const candBlock: TextBlockParam = { type: 'text', text: `CANDIDATE_SCOPE (unified across all bids):\n${candidateUnionFinal.map((s,i)=>`${i+1}. ${s}`).join('\n')}` };
     content.push(candBlock);
@@ -328,6 +332,9 @@ export async function POST(req: NextRequest) {
     // Limit evidence to ~30k tokens worth of chars
     let accChars = 0;
     let combinedEvidence = '';
+    const explicitExclusions: string[] = [];
+    const explicitInclusions: string[] = [];
+
     for (const c of docs.texts) {
       if (accChars > 120_000) break; // ~30k tokens
       // Drop boilerplate noise; keep likely line-items
@@ -337,7 +344,20 @@ export async function POST(req: NextRequest) {
       const kept: string[] = [];
       for (const line of lines) {
         const sec = detectSection(line);
-        if (sec) { section = sec; kept.push(`-- SECTION: ${sec.toUpperCase()}`); continue; }
+        if (sec) {
+          section = sec;
+          kept.push(`-- SECTION: ${sec.toUpperCase()}`);
+          continue;
+        }
+        // Track items in exclusions/inclusions sections separately
+        if (section === 'exclusions' && line.trim()) {
+          const cleaned = line.replace(/^\s*[\d\-\*•]+[\.\)]*\s*/, '').trim();
+          if (cleaned && cleaned.length > 5) explicitExclusions.push(cleaned);
+        }
+        if (section === 'inclusions' && line.trim()) {
+          const cleaned = line.replace(/^\s*[\d\-\*•]+[\.\)]*\s*/, '').trim();
+          if (cleaned && cleaned.length > 5) explicitInclusions.push(cleaned);
+        }
         // Keep high-signal lines even if a section header wasn't reliably detected
         if (domainKeep(line) || (section && domainKeep(line))) kept.push(line);
       }
@@ -347,6 +367,20 @@ export async function POST(req: NextRequest) {
       content.push(t);
       accChars += t.text.length;
       combinedEvidence += '\n' + snippet;
+    }
+
+    // Add structured exclusions/inclusions as separate guidance block
+    if (explicitExclusions.length > 0 || explicitInclusions.length > 0) {
+      let structuredBlock = '\n=== STRUCTURED QUALIFICATIONS ===\n';
+      if (explicitInclusions.length > 0) {
+        structuredBlock += `EXPLICITLY INCLUDED ITEMS (mark as 'included'):\n${explicitInclusions.slice(0, 50).map((x, i) => `${i+1}. ${x}`).join('\n')}\n\n`;
+      }
+      if (explicitExclusions.length > 0) {
+        structuredBlock += `EXPLICITLY EXCLUDED ITEMS (mark as 'excluded' ONLY if they match a candidate scope item):\n${explicitExclusions.slice(0, 50).map((x, i) => `${i+1}. ${x}`).join('\n')}\n\n`;
+        structuredBlock += `IMPORTANT: Items NOT in this exclusions list should be marked 'not_specified', NOT 'excluded'.\n`;
+      }
+      content.push({ type: 'text', text: structuredBlock });
+      accChars += structuredBlock.length;
     }
     // If evidence is too thin, add lenient fallback blocks using raw cleaned text
     const evidenceChars = (content as ContentBlockParam[]).reduce((acc, b) => acc + (b.type === 'text' ? (((b as TextBlockParam).text || '').length) : 0), 0);
@@ -491,6 +525,17 @@ export async function POST(req: NextRequest) {
       content2.push(instruct);
       content2.push({ type: 'text', text: `CANDIDATE_SCOPE (unified across all bids):\n${candidateUnionFinal.map((s,i)=>`${i+1}. ${s}`).join('\n')}` });
       content2.push({ type: 'text', text: `--- Contractor: ${contractorName} (id ${b.contractor_id || 'unassigned'}) ---` });
+      // Re-add structured qualifications in retry
+      if (explicitExclusions.length > 0 || explicitInclusions.length > 0) {
+        let structuredBlock = '\n=== STRUCTURED QUALIFICATIONS ===\n';
+        if (explicitInclusions.length > 0) {
+          structuredBlock += `EXPLICITLY INCLUDED ITEMS:\n${explicitInclusions.slice(0, 50).map((x, i) => `${i+1}. ${x}`).join('\n')}\n\n`;
+        }
+        if (explicitExclusions.length > 0) {
+          structuredBlock += `EXPLICITLY EXCLUDED ITEMS:\n${explicitExclusions.slice(0, 50).map((x, i) => `${i+1}. ${x}`).join('\n')}\n\n`;
+        }
+        content2.push({ type: 'text', text: structuredBlock });
+      }
       let acc2 = 0;
       for (const c of docs.texts) {
         if (acc2 > 160_000) break;
