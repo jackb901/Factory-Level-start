@@ -165,6 +165,13 @@ export async function POST(req: NextRequest) {
     return best;
   };
 
+  // Utility: identify totals-like strings that should never become scope items
+  const isTotalsLike = (s: string) => /(base\s*bid|total(?:\s*(?:price|amount))?|bid\s*amount|subtotal|sales\s*tax)/i.test(s);
+  const cleanEvidence = (t: string) => t
+    // avoid truncation around colon-dollar patterns
+    .replace(/:\s*\$(?=\s*\d)/g, ' $')
+    .replace(/\bis:\s*\$/gi, ' is $');
+
   // Build candidate scope items deterministically from extracted texts/tables
   const normalizeScope = (s: string) => {
     const t = s.replace(/[_\-\t]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -236,7 +243,8 @@ export async function POST(req: NextRequest) {
     const canon = canonize(scopeIndex, s) || s;
     if (!canonicalCandidates.includes(canon)) canonicalCandidates.push(canon);
   }
-  const candidateUnion = canonicalCandidates.slice(0, 300);
+  let candidateUnion = canonicalCandidates.filter(s => !isTotalsLike(s));
+  candidateUnion = candidateUnion.slice(0, 300);
 
   // Aggregator pass: ask model to propose unified candidate scope from all bids
   try {
@@ -265,7 +273,7 @@ export async function POST(req: NextRequest) {
       if (!canonicalCandidates.includes(canon)) canonicalCandidates.push(canon);
     }
   } catch {}
-  const candidateUnionFinal = canonicalCandidates.slice(0, 300);
+  const candidateUnionFinal = canonicalCandidates.filter(s => !isTotalsLike(s)).slice(0, 300);
 
   const batches: typeof bidList[] = [];
   for (let i = 0; i < bidList.length; i += LIMITS.batchSize) batches.push(bidList.slice(i, i + LIMITS.batchSize));
@@ -309,7 +317,8 @@ export async function POST(req: NextRequest) {
     for (const c of docs.texts) {
       if (accChars > 120_000) break; // ~30k tokens
       // Drop boilerplate noise; keep likely line-items
-      const lines = c.text.split(/\r?\n/);
+      const cleaned = cleanEvidence(c.text);
+      const lines = cleaned.split(/\r?\n/);
       let section: string | null = null;
       const kept: string[] = [];
       for (const line of lines) {
@@ -324,6 +333,21 @@ export async function POST(req: NextRequest) {
       content.push(t);
       accChars += t.text.length;
       combinedEvidence += '\n' + snippet;
+    }
+    // If evidence is too thin, add lenient fallback blocks using raw cleaned text
+    const evidenceChars = (content as ContentBlockParam[]).reduce((acc, b) => acc + (b.type === 'text' ? (((b as TextBlockParam).text || '').length) : 0), 0);
+    if (evidenceChars < 1500) {
+      for (const c of docs.texts) {
+        if (accChars > 160_000) break;
+        const raw = cleanEvidence(c.text);
+        const add = raw.slice(0, 3000);
+        const t: TextBlockParam = { type: 'text', text: `=== RAW EXTRACT (lenient): ${c.name} ===\n${add}` };
+        content.push(t);
+        accChars += t.text.length;
+        combinedEvidence += '\n' + add;
+        if (accChars > 40_000) break; // keep small fallback footprint
+      }
+      try { console.log('[level/worker] fallback_lenient', true); } catch {}
     }
     const detectedTotal = combinedEvidence ? findTotalInText(combinedEvidence) : null;
 
@@ -359,7 +383,7 @@ export async function POST(req: NextRequest) {
     content = trimToBudget(content, 30_000);
     // DEBUG: visibility into inputs and scope fed to the model
     try {
-      const evidenceChars = (content as ContentBlockParam[]).reduce((acc, b) => acc + (b.type === 'text' ? ((b as TextBlockParam).text?.length || 0) : 0), 0);
+      const evidenceChars2 = (content as ContentBlockParam[]).reduce((acc, b) => acc + (b.type === 'text' ? ((b as TextBlockParam).text?.length || 0) : 0), 0);
       // Only log limited preview to avoid leaking large payloads
       const preview = (content as ContentBlockParam[])
         .filter(b => b.type === 'text')
@@ -368,8 +392,19 @@ export async function POST(req: NextRequest) {
         .join('\n---\n');
       console.log('[level/worker] scope_count', candidateUnionFinal.length);
       console.log('[level/worker] scope_sample', candidateUnionFinal.slice(0, 25));
-      console.log('[level/worker] evidence_chars', evidenceChars);
+      console.log('[level/worker] evidence_chars', evidenceChars2);
       console.log('[level/worker] evidence_preview', preview);
+      // Persist debug audit to processing_jobs.meta (truncated)
+      const metaDbg = {
+        ts: new Date().toISOString(),
+        contractor: contractorName,
+        scope_count: candidateUnionFinal.length,
+        scope_sample: candidateUnionFinal.slice(0, 25),
+        evidence_chars: evidenceChars2,
+        evidence_preview: preview,
+      };
+      const currentMeta = (job.meta ?? {}) as Record<string, unknown>;
+      await supabase.from('processing_jobs').update({ meta: { ...currentMeta, debug: metaDbg } }).eq('id', job.id);
     } catch {}
     const system = `You are a construction estimator building a Division-level bid leveling matrix. Ignore letterheads, addresses, and proposal boilerplate. Focus on Scope of Work, Inclusions/Exclusions/Alternates/Allowances, equipment lists and SOV tables. Strict JSON only.`;
 
@@ -419,6 +454,13 @@ export async function POST(req: NextRequest) {
       if (candidateSet.has(normalizeScope(it.name))) kept.push(it); else dropped.push({ name: it.name, evidence: ev });
     }
     try { console.log('[level/worker] kept_vs_total', kept.length, '/', items.length); } catch {}
+    // Persist raw response preview for audit
+    try {
+      const rawPreview = (text || '').slice(0, 10_000);
+      const currentMeta = (job.meta ?? {}) as Record<string, unknown>;
+      const prevDebug = (currentMeta.debug || {}) as Record<string, unknown>;
+      await supabase.from('processing_jobs').update({ meta: { ...currentMeta, debug: { ...prevDebug, raw_response_preview: rawPreview } } }).eq('id', job.id);
+    } catch {}
     const cidKey = b.contractor_id || 'unassigned';
     per[cidKey] = { items: kept, qualifications: parsed.qualifications, unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
     unmappedPer[cidKey] = [...(parsed.unmapped || []), ...dropped];
