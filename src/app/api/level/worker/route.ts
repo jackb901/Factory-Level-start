@@ -172,10 +172,41 @@ export async function POST(req: NextRequest) {
     .replace(/:\s*\$(?=\s*\d)/g, ' $')
     .replace(/\bis:\s*\$/gi, ' is $');
 
+  // Detect and filter out non-scope junk
+  const isJunkLine = (s: string): boolean => {
+    const l = s.toLowerCase();
+    // Company info patterns
+    if (/^[a-z\s]+mechanical\s*$/i.test(s)) return true; // "Silicon Valley Mechanical"
+    if (/^[a-z\s]+construction\s*$/i.test(s)) return true; // "Blach Construction"
+    if (/\b(inc|llc|corp|ltd|company)\b[.\s]*$/i.test(s)) return true;
+    // Address patterns
+    if (/^\d+\s+[a-z\s]+(ave|avenue|st|street|rd|road|blvd|boulevard|dr|drive|way|pl|place|ct|court)[.\s#]*\d*/i.test(s)) return true;
+    if (/^[a-z\s]+,?\s+(ca|california|ny|texas|tx|fl|florida)\s+\d{5}/i.test(s)) return true;
+    // Phone/fax/license patterns
+    if (/\b\d{3}[.\-\s]?\d{3}[.\-\s]?\d{4}\b/.test(s)) return true;
+    if (/\b(lic#|license|fax|phone|tel|dir\s*#|email)\b/i.test(l)) return true;
+    // Email/communication patterns
+    if (/@|attn:|dear\s|re:|subject:/i.test(s)) return true;
+    // Document reference patterns
+    if (/^(•|\*|-|\d+\.)\s*(mep|architectural|mechanical)\s+drawings/i.test(s)) return true;
+    if (/\bdrawings?\b.*\(\d+\.\d+\.\d+\)/i.test(s)) return true; // "Drawings (7.1.2025)"
+    if (/^(•|\*|-|\d+\.)\s*specifications?\s*\(/i.test(s)) return true;
+    if (/^(•|\*|-|\d+\.)\s*schedule\s*\(/i.test(s)) return true;
+    // Boilerplate/narrative patterns
+    if (/^(the\s+pricing|pricing\s+below|pricing\s+is|proposed\s+scope|scope\s+of\s+work\s+is|work\s+is\s+as\s+follows)/i.test(s)) return true;
+    if (/^(thank\s+you|sincerely|regards|best|proposal|bid\s+form|page\s+\d)/i.test(s)) return true;
+    // Section headers themselves (not content)
+    if (/^(scope|inclusions?|exclusions?|allowances?|alternates?|general|proposed)\s*:?\s*$/i.test(s)) return true;
+    // Too short or too long
+    if (s.length < 3 || s.length > 150) return true;
+    return false;
+  };
+
   // Build candidate scope items deterministically from extracted texts/tables
   const normalizeScope = (s: string) => {
     const t = s.replace(/[_\-\t]+/g, ' ').replace(/\s+/g, ' ').trim();
     if (!t) return '';
+    if (isJunkLine(t)) return '';
     const lower = t.toLowerCase();
     const skip = ['total', 'subtotal', 'tax', 'notes', 'note', 'bid form', 'signature', 'thank you', 'proposal', 'drawings', 'architectural drawings', 'mep drawings', 'specifications', 'schedule', 'pricing', 'valid for', 'lead times', 'receipt of order', 'warranty', 'contact', 'phone', 'email', 'address'];
     if (skip.includes(lower)) return '';
@@ -185,14 +216,15 @@ export async function POST(req: NextRequest) {
   const domainKeep = (line: string) => {
     const l = line.toLowerCase();
     if (!/[a-z]/.test(l)) return false;
-    const exclude = /(proposal|letterhead|address|phone|email|fax|license|terms|valid\s*for|covid|thank you|signature|receipt|submittal log)/i;
+    // First check if it's junk
+    if (isJunkLine(line)) return false;
+    const exclude = /(proposal|letterhead|address|phone|email|fax|license|terms|valid\s*for|covid|thank you|signature|receipt|submittal log|attn:|dear\s|re:|subject:)/i;
     if (exclude.test(l)) return false;
-    // Relaxed: keep if mentions equipment, work items, or has money/qty - expanded patterns
-    const include = /(hvac|vrf|vrv|air handler|ahu|fan coil|ton\b|cfm\b|mbh\b|duct|grille|diffuser|register|damper|exhaust|filter|insulation|refrigerant|condensate|controls|bms|bacnet|ddc|tab\b|testing|balancing|startup|commission|crane|rigging|bim|shop drawings|title 24|seismic|permit|inspection|controller|selector box|split system|vav|terminal unit|equipment|piping|mechanical|installation|labor|material|service|maintenance|warranty|coordination|supervision|documentation|as-built|firestopping|hoisting|rental)/i;
+    // Must contain actual scope-related keywords
+    const include = /(hvac|vrf|vrv|air handler|ahu|fan coil|ton\b|cfm\b|mbh\b|duct|grille|diffuser|register|damper|exhaust|filter|insulation|refrigerant|condensate|controls|bms|bacnet|ddc|tab\b|testing|balancing|startup|commission|crane|rigging|bim|shop drawings|title 24|seismic|permit|inspection|controller|selector box|split system|vav|terminal unit|equipment|piping|install|furnish|provide|supply)/i;
     const moneyOrQty = /(\$\s?\d|\d+\s?(ea|each|qty|pcs?|sf|lf|sy|cy|cf|ls)\b)/i;
-    // Keep any line in a recognized section with reasonable length
-    const hasSubstantialText = l.length >= 10 && l.length <= 200;
-    return include.test(l) || moneyOrQty.test(l) || hasSubstantialText;
+    // ONLY keep if it has scope keywords or money/qty
+    return include.test(l) || moneyOrQty.test(l);
   };
 
   const detectSection = (line: string): string | null => {
@@ -253,7 +285,16 @@ export async function POST(req: NextRequest) {
   // Aggregator pass: ask model to propose unified candidate scope from all bids
   try {
     const aggContent: ContentBlockParam[] = [];
-    const aggIntro: TextBlockParam = { type: 'text', text: `You will propose a unified list of scope items for Division ${division || ''}. ONLY output JSON: {"scope_items": string[]} using canonical HVAC terms. Use evidence below; ignore addresses/boilerplate. Do not include totals or qualifications.` };
+    const aggIntro: TextBlockParam = { type: 'text', text: `You will propose a unified, normalized list of scope items for Division ${division || ''}. ONLY output JSON: {"scope_items": string[]}.
+
+CRITICAL RULES:
+- Consolidate granular items into higher-level categories (e.g., "a. Prefabricated steel skid 2 module condenser system" → "VRF/VRV system")
+- Use standard HVAC/mechanical terminology only
+- Ignore and exclude: company names, addresses, phone numbers, email headers, document references (drawings/specs), narrative text, section headers
+- DO NOT include: "Silicon Valley Mechanical", "2115 Ringwood Ave", "Attn:", "Dear", phone numbers, "MEP Drawings", "Specifications", etc.
+- Focus on actual work scope only: equipment, systems, services, materials, installation
+- 20-50 items max (prefer fewer, well-normalized categories)
+- Do not include totals, qualifications, or exclusions` };
     aggContent.push(aggIntro);
     let aggChars = 0;
     for (const b of bidList) {
@@ -266,7 +307,7 @@ export async function POST(req: NextRequest) {
         aggChars += slice.length;
       }
     }
-    const aggSystem = `You are a construction estimator. From multiple bids, propose a clean unified list of HVAC scope items (15-80 items max). Use concise canonical names; ignore boilerplate.`;
+    const aggSystem = `You are a construction estimator normalizing scope across multiple HVAC bids. Produce a clean, consolidated list of scope categories. Ignore boilerplate, addresses, company info. Consolidate specific equipment into general categories. Output 20-50 normalized items max.`;
     const aggResp = await anthropic.messages.create({ model: MODEL, max_tokens: 1200, temperature: 0.1, system: aggSystem, messages: [{ role: 'user', content: aggContent }] } as unknown as Parameters<typeof anthropic.messages.create>[0]);
     const aggMsg = aggResp as unknown as { content?: Array<{ type: string; text?: string }> };
     const aggText = (Array.isArray(aggMsg.content) ? (aggMsg.content.find((b: unknown) => (typeof b === 'object' && b !== null && (b as { type?: string }).type === 'text')) as { type: string; text?: string } | undefined)?.text || '' : '') as string;
@@ -277,7 +318,12 @@ export async function POST(req: NextRequest) {
       if (!canonicalCandidates.includes(canon)) canonicalCandidates.push(canon);
     }
   } catch {}
-  const candidateUnionFinal = canonicalCandidates.filter(s => !isTotalsLike(s)).slice(0, 300);
+  // Final aggressive filter: remove any junk that made it through
+  const candidateUnionFinal = canonicalCandidates
+    .filter(s => !isTotalsLike(s))
+    .filter(s => !isJunkLine(s))
+    .filter(s => s.length >= 3 && s.length <= 150)
+    .slice(0, 100); // Limit to 100 max scope items
 
   const batches: typeof bidList[] = [];
   for (let i = 0; i < bidList.length; i += LIMITS.batchSize) batches.push(bidList.slice(i, i + LIMITS.batchSize));
