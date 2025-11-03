@@ -143,7 +143,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing ANTHROPIC_API_KEY' }, { status: 500 });
   }
   const anthropic = new Anthropic({ apiKey: anthropicKey });
-  const MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022';
+  const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929';
+  const USE_STRICT_FILTERING = process.env.USE_STRICT_FILTERING === 'true'; // Toggle for evidence filtering
   const scopeIndex = buildSynonymIndex(DIV23_SCOPE);
 
   // Utilities to parse totals from evidence text
@@ -171,6 +172,17 @@ export async function POST(req: NextRequest) {
     // avoid truncation around colon-dollar patterns
     .replace(/:\s*\$(?=\s*\d)/g, ' $')
     .replace(/\bis:\s*\$/gi, ' is $');
+
+  // Strip number/letter prefixes from scope items
+  const stripPrefix = (s: string): string => {
+    // Remove patterns like: "1. ", "a. ", "b. ", "i. ", "2. Install", etc.
+    return s
+      .replace(/^[a-z]\.\s*/i, '') // "a. something" → "something"
+      .replace(/^\d+\.\s*/, '') // "1. something" → "something"
+      .replace(/^[ivxIVX]+\.\s*/, '') // "i. something" → "something"
+      .replace(/^\([a-z0-9]+\)\s*/i, '') // "(a) something" → "something"
+      .trim();
+  };
 
   // Detect and filter out non-scope junk
   const isJunkLine = (s: string): boolean => {
@@ -314,7 +326,8 @@ CRITICAL RULES:
     const aggParsed = (() => { try { return JSON.parse(aggText) as { scope_items?: string[] }; } catch { try { return JSON.parse((aggText.match(/\{[\s\S]*\}/)?.[0] || '{}')) as { scope_items?: string[] }; } catch { return { scope_items: [] }; } } })();
     const proposed = Array.isArray(aggParsed.scope_items) ? aggParsed.scope_items : [];
     for (const s of proposed) {
-      const canon = canonize(scopeIndex, s) || s;
+      const stripped = stripPrefix(s);
+      const canon = canonize(scopeIndex, stripped) || stripped;
       if (!canonicalCandidates.includes(canon)) canonicalCandidates.push(canon);
     }
   } catch {}
@@ -404,8 +417,16 @@ CRITICAL RULES:
           const cleaned = line.replace(/^\s*[\d\-\*•]+[\.\)]*\s*/, '').trim();
           if (cleaned && cleaned.length > 5) explicitInclusions.push(cleaned);
         }
-        // Keep high-signal lines even if a section header wasn't reliably detected
-        if (domainKeep(line) || (section && domainKeep(line))) kept.push(line);
+        // Evidence filtering strategy: strict vs. lenient
+        if (USE_STRICT_FILTERING) {
+          // Strict: only keep lines with scope keywords
+          if (domainKeep(line) || (section && domainKeep(line))) kept.push(line);
+        } else {
+          // Lenient: keep everything except obvious junk, let Claude decide
+          if (!isJunkLine(line) && line.trim().length > 0) {
+            kept.push(line);
+          }
+        }
       }
       const filtered = kept.join('\n');
       const snippet = filtered.length > 4000 ? filtered.slice(0, 4000) : filtered;
