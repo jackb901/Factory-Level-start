@@ -144,11 +144,10 @@ export async function POST(req: NextRequest) {
   }
   const anthropic = new Anthropic({ apiKey: anthropicKey });
   const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929';
-  const USE_STRICT_FILTERING = process.env.USE_STRICT_FILTERING === 'true'; // Toggle for evidence filtering
   const scopeIndex = buildSynonymIndex(DIV23_SCOPE);
 
   // Debug: log configuration
-  try { console.log(`[Config] MODEL=${MODEL}, USE_STRICT_FILTERING=${USE_STRICT_FILTERING}`); } catch {}
+  try { console.log(`[Config] MODEL=${MODEL}, SIMPLIFIED_MODE=true`); } catch {}
 
   // Utilities to parse totals from evidence text
   const parseMoney = (s: string): number | null => {
@@ -385,7 +384,33 @@ CRITICAL RULES:
     const b = batch[0];
     let content: ContentBlockParam[] = [];
     const contractorName = b.contractor_id ? (contractorsMap[b.contractor_id] || 'Contractor') : 'Contractor';
-    const instruct: TextBlockParam = { type: 'text', text: `You are labeling scope coverage for a single contractor's bid. STRICT JSON ONLY.\nSCHEMA:{"items":[{"name":string,"status":"included"|"excluded"|"not_specified","price"?:number|null,"evidence":string}],"qualifications":{"includes"?:string[],"excludes"?:string[],"allowances"?:string[],"alternates"?:string[],"payment_terms"?:string[],"fine_print"?:string[]},"total"?:number|null,"unmapped":[{"name":string,"evidence":string,"confidence"?:number}]}\nRules:\n- ONLY choose item names that are EXACTLY present in CANDIDATE_SCOPE (case-insensitive). Do not invent new names.\n- If you find relevant scope not in the list, put it in 'unmapped' with a short evidence snippet and confidence 0..1; do not add it to 'items'.\n- Map differing wording to the closest candidate item (e.g., '40 ton AHU' → 'HVAC equipment' or 'VRF/VRV system' depending on context).\n- CRITICAL status rules:\n  * 'included' = item is explicitly provided, mentioned in scope/inclusions sections, or present in equipment lists/pricing tables\n  * 'excluded' = ONLY when the specific item appears under an "EXCLUSIONS" section header or is explicitly stated as "not included"\n  * 'not_specified' = item is not mentioned anywhere in the bid documents\n  * DEFAULT to 'not_specified' for items not mentioned - do NOT mark as 'excluded' unless explicitly excluded\n  * If a contractor has an exclusions list, ONLY mark those specific items as 'excluded', not everything else\n  * When you see "-- SECTION: EXCLUSIONS", only items listed in that section are excluded\n- For each 'items' entry, include a brief evidence snippet (table row or nearby sentence with quantities/capacities/$).\n- Extract total/base bid if present; do not hallucinate prices.\n- In qualifications.excludes, list the actual exclusion text from the bid.` };
+    const instruct: TextBlockParam = { type: 'text', text: `Analyze this contractor's bid documents and determine which scope items they include or exclude.
+
+OUTPUT FORMAT (JSON only):
+{
+  "items": [
+    {"name": "exact match from CANDIDATE_SCOPE", "status": "included|excluded|not_specified", "price": number|null, "evidence": "brief quote showing this"}
+  ],
+  "qualifications": {
+    "includes": ["items explicitly listed as included"],
+    "excludes": ["items explicitly listed as excluded"],
+    "allowances": ["allowance items"],
+    "alternates": ["alternate options"]
+  },
+  "total": base_bid_total_or_null
+}
+
+INSTRUCTIONS:
+1. For each item in CANDIDATE_SCOPE below, determine the status:
+   - "included" = contractor explicitly provides this OR it's in their scope/inclusions sections OR pricing tables
+   - "excluded" = contractor explicitly lists this under EXCLUSIONS section or states "not included"
+   - "not_specified" = item is not mentioned in their bid at all
+
+2. ONLY use "excluded" if explicitly listed in an exclusions section. If not mentioned, use "not_specified".
+
+3. Match bid wording to closest CANDIDATE_SCOPE item (e.g., "VRF system" → "VRF/VRV system")
+
+4. Extract base bid total if present in the documents.` };
     content.push(instruct);
     const candBlock: TextBlockParam = { type: 'text', text: `CANDIDATE_SCOPE (unified across all bids):\n${candidateUnionFinal.map((s,i)=>`${i+1}. ${s}`).join('\n')}` };
     content.push(candBlock);
@@ -397,48 +422,52 @@ CRITICAL RULES:
     const explicitExclusions: string[] = [];
     const explicitInclusions: string[] = [];
 
+    // SIMPLIFIED APPROACH: Send raw text with minimal filtering (like Claude chat)
     for (const c of docs.texts) {
-      if (accChars > 120_000) break; // ~30k tokens
-      // Drop boilerplate noise; keep likely line-items
-      const cleaned = cleanEvidence(c.text);
-      const lines = cleaned.split(/\r?\n/);
+      if (accChars > 200_000) break; // Allow more text
+
+      const lines = c.text.split(/\r?\n/);
       let section: string | null = null;
       const kept: string[] = [];
+
       for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        // Detect section headers
         const sec = detectSection(line);
         if (sec) {
           section = sec;
-          kept.push(`-- SECTION: ${sec.toUpperCase()}`);
+          kept.push(`\n=== ${sec.toUpperCase()} SECTION ===`);
           continue;
         }
-        // Track items in exclusions/inclusions sections separately
-        if (section === 'exclusions' && line.trim()) {
-          const cleaned = line.replace(/^\s*[\d\-\*•]+[\.\)]*\s*/, '').trim();
-          if (cleaned && cleaned.length > 5) explicitExclusions.push(cleaned);
+
+        // Track exclusions/inclusions for structured block
+        if (section === 'exclusions' && trimmed.length > 5) {
+          const cleaned = trimmed.replace(/^\s*[\d\-\*•]+[\.\)]*\s*/, '');
+          if (cleaned) explicitExclusions.push(cleaned);
         }
-        if (section === 'inclusions' && line.trim()) {
-          const cleaned = line.replace(/^\s*[\d\-\*•]+[\.\)]*\s*/, '').trim();
-          if (cleaned && cleaned.length > 5) explicitInclusions.push(cleaned);
+        if (section === 'inclusions' && trimmed.length > 5) {
+          const cleaned = trimmed.replace(/^\s*[\d\-\*•]+[\.\)]*\s*/, '');
+          if (cleaned) explicitInclusions.push(cleaned);
         }
-        // Evidence filtering strategy: strict vs. lenient
-        if (USE_STRICT_FILTERING) {
-          // Strict: only keep lines with scope keywords
-          if (domainKeep(line) || (section && domainKeep(line))) kept.push(line);
-        } else {
-          // Lenient: keep everything except obvious junk, let Claude decide
-          if (!isJunkLine(line) && line.trim().length > 0) {
-            kept.push(line);
-          }
-        }
+
+        // ONLY filter obvious junk (addresses, company names, phone numbers)
+        // Keep EVERYTHING else - let Claude decide
+        if (isJunkLine(line)) continue;
+
+        kept.push(line);
       }
-      const filtered = kept.join('\n');
-      const snippet = filtered.length > 4000 ? filtered.slice(0, 4000) : filtered;
-      const t: TextBlockParam = { type: 'text', text: `=== EXTRACT: ${c.name} ===\n${snippet}` };
+
+      const fullText = kept.join('\n');
+      const snippet = fullText.length > 8000 ? fullText.slice(0, 8000) : fullText;
+      const t: TextBlockParam = { type: 'text', text: `=== DOCUMENT: ${c.name} ===\n${snippet}\n` };
       content.push(t);
       accChars += t.text.length;
       combinedEvidence += '\n' + snippet;
+
       // Debug: log evidence stats
-      try { console.log(`[Pass2] ${contractorName} - kept ${kept.length} lines, ${filtered.length} chars from ${c.name}`); } catch {}
+      try { console.log(`[Pass2-SIMPLIFIED] ${contractorName} - sent ${kept.length} lines (${fullText.length} chars) from ${c.name}`); } catch {}
     }
 
     // Add structured exclusions/inclusions as separate guidance block
