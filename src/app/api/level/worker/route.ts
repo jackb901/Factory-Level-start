@@ -186,33 +186,38 @@ export async function POST(req: NextRequest) {
       .trim();
   };
 
-  // Detect and filter out non-scope junk
+  // Detect and filter out non-scope junk - ULTRA CONSERVATIVE (only obvious header junk)
   const isJunkLine = (s: string): boolean => {
-    const l = s.toLowerCase();
-    // Company info patterns
-    if (/^[a-z\s]+mechanical\s*$/i.test(s)) return true; // "Silicon Valley Mechanical"
-    if (/^[a-z\s]+construction\s*$/i.test(s)) return true; // "Blach Construction"
-    if (/\b(inc|llc|corp|ltd|company)\b[.\s]*$/i.test(s)) return true;
-    // Address patterns
-    if (/^\d+\s+[a-z\s]+(ave|avenue|st|street|rd|road|blvd|boulevard|dr|drive|way|pl|place|ct|court)[.\s#]*\d*/i.test(s)) return true;
-    if (/^[a-z\s]+,?\s+(ca|california|ny|texas|tx|fl|florida)\s+\d{5}/i.test(s)) return true;
-    // Phone/fax/license patterns
-    if (/\b\d{3}[.\-\s]?\d{3}[.\-\s]?\d{4}\b/.test(s)) return true;
-    if (/\b(lic#|license|fax|phone|tel|dir\s*#|email)\b/i.test(l)) return true;
-    // Email/communication patterns
-    if (/@|attn:|dear\s|re:|subject:/i.test(s)) return true;
-    // Document reference patterns
-    if (/^(•|\*|-|\d+\.)\s*(mep|architectural|mechanical)\s+drawings/i.test(s)) return true;
-    if (/\bdrawings?\b.*\(\d+\.\d+\.\d+\)/i.test(s)) return true; // "Drawings (7.1.2025)"
-    if (/^(•|\*|-|\d+\.)\s*specifications?\s*\(/i.test(s)) return true;
-    if (/^(•|\*|-|\d+\.)\s*schedule\s*\(/i.test(s)) return true;
-    // Boilerplate/narrative patterns
-    if (/^(the\s+pricing|pricing\s+below|pricing\s+is|proposed\s+scope|scope\s+of\s+work\s+is|work\s+is\s+as\s+follows)/i.test(s)) return true;
-    if (/^(thank\s+you|sincerely|regards|best|proposal|bid\s+form|page\s+\d)/i.test(s)) return true;
-    // Section headers themselves (not content)
-    if (/^(scope|inclusions?|exclusions?|allowances?|alternates?|general|proposed)\s*:?\s*$/i.test(s)) return true;
-    // Too short or too long
-    if (s.length < 3 || s.length > 150) return true;
+    const trimmed = s.trim();
+    if (trimmed.length < 2) return true; // Empty or nearly empty
+
+    const l = trimmed.toLowerCase();
+
+    // ONLY filter obvious letterhead/header junk that appears standalone
+    // Company name ONLY if it's by itself on the line
+    if (/^[a-z\s]+(mechanical|construction|engineering)\s*$/i.test(trimmed) && trimmed.length < 40) return true;
+
+    // Street addresses ONLY if they're standalone (not part of a sentence)
+    if (/^\d+\s+[a-z\s]+(ave|avenue|st|street|rd|road|blvd|dr|way|pl|ct)\b/i.test(trimmed) && trimmed.length < 50) return true;
+
+    // City/state/zip ONLY if standalone
+    if (/^[a-z\s]+,\s+(ca|california|ny|tx|fl)\s+\d{5}$/i.test(trimmed)) return true;
+
+    // Standalone phone/fax lines (but NOT lines that contain phone + other content)
+    if (/^(phone|fax|tel|office)?\s*:?\s*\(?\d{3}\)?[.\-\s]?\d{3}[.\-\s]?\d{4}\s*$/i.test(trimmed)) return true;
+
+    // License lines (standalone only)
+    if (/^(license|lic)\s*(number|no|#)?:?\s*\d+\s*$/i.test(trimmed)) return true;
+
+    // Email addresses (standalone only)
+    if (/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(trimmed)) return true;
+
+    // Salutations (standalone only)
+    if (/^(dear|attn:|attention:)\s+[a-z\s]+:?\s*$/i.test(trimmed) && trimmed.length < 50) return true;
+
+    // Website URLs (standalone only)
+    if (/^(www\.|https?:\/\/)[a-z0-9.-]+\.[a-z]{2,}\s*$/i.test(trimmed)) return true;
+
     return false;
   };
 
@@ -429,6 +434,7 @@ INSTRUCTIONS:
       const lines = c.text.split(/\r?\n/);
       let section: string | null = null;
       const kept: string[] = [];
+      let filteredCount = 0;
 
       for (const line of lines) {
         const trimmed = line.trim();
@@ -454,20 +460,23 @@ INSTRUCTIONS:
 
         // ONLY filter obvious junk (addresses, company names, phone numbers)
         // Keep EVERYTHING else - let Claude decide
-        if (isJunkLine(line)) continue;
+        if (isJunkLine(line)) {
+          filteredCount++;
+          continue;
+        }
 
         kept.push(line);
       }
 
       const fullText = kept.join('\n');
-      const snippet = fullText.length > 8000 ? fullText.slice(0, 8000) : fullText;
+      const snippet = fullText.length > 10000 ? fullText.slice(0, 10000) : fullText; // Increased from 8000
       const t: TextBlockParam = { type: 'text', text: `=== DOCUMENT: ${c.name} ===\n${snippet}\n` };
       content.push(t);
       accChars += t.text.length;
       combinedEvidence += '\n' + snippet;
 
-      // Debug: log evidence stats
-      try { console.log(`[Pass2-SIMPLIFIED] ${contractorName} - sent ${kept.length} lines (${fullText.length} chars) from ${c.name}`); } catch {}
+      // Debug: log evidence stats with filter count
+      try { console.log(`[Pass2-ULTRA-LENIENT] ${contractorName} - kept ${kept.length} lines (filtered ${filteredCount}), ${fullText.length} chars from ${c.name}`); } catch {}
     }
 
     // Add structured exclusions/inclusions as separate guidance block
