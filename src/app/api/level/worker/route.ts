@@ -147,6 +147,9 @@ export async function POST(req: NextRequest) {
   const USE_STRICT_FILTERING = process.env.USE_STRICT_FILTERING === 'true'; // Toggle for evidence filtering
   const scopeIndex = buildSynonymIndex(DIV23_SCOPE);
 
+  // Debug: log configuration
+  try { console.log(`[Config] MODEL=${MODEL}, USE_STRICT_FILTERING=${USE_STRICT_FILTERING}`); } catch {}
+
   // Utilities to parse totals from evidence text
   const parseMoney = (s: string): number | null => {
     const cleaned = s.replace(/[,\s]/g, '');
@@ -434,6 +437,8 @@ CRITICAL RULES:
       content.push(t);
       accChars += t.text.length;
       combinedEvidence += '\n' + snippet;
+      // Debug: log evidence stats
+      try { console.log(`[Pass2] ${contractorName} - kept ${kept.length} lines, ${filtered.length} chars from ${c.name}`); } catch {}
     }
 
     // Add structured exclusions/inclusions as separate guidance block
