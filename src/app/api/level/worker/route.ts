@@ -237,13 +237,16 @@ export async function POST(req: NextRequest) {
     if (!/[a-z]/.test(l)) return false;
     // First check if it's junk
     if (isJunkLine(line)) return false;
-    const exclude = /(proposal|letterhead|address|phone|email|fax|license|terms|valid\s*for|covid|thank you|signature|receipt|submittal log|attn:|dear\s|re:|subject:)/i;
+    const exclude = /(proposal|letterhead|address|phone|email|fax|license|terms|valid\s*for|covid|thank you|signature|receipt|submittal log|attn:|dear\s|re:|subject:|sincerely|warranty|page\s+\d+$)/i;
     if (exclude.test(l)) return false;
-    // Must contain actual scope-related keywords
-    const include = /(hvac|vrf|vrv|air handler|ahu|fan coil|ton\b|cfm\b|mbh\b|duct|grille|diffuser|register|damper|exhaust|filter|insulation|refrigerant|condensate|controls|bms|bacnet|ddc|tab\b|testing|balancing|startup|commission|crane|rigging|bim|shop drawings|title 24|seismic|permit|inspection|controller|selector box|split system|vav|terminal unit|equipment|piping|install|furnish|provide|supply)/i;
-    const moneyOrQty = /(\$\s?\d|\d+\s?(ea|each|qty|pcs?|sf|lf|sy|cy|cf|ls)\b)/i;
-    // ONLY keep if it has scope keywords or money/qty
-    return include.test(l) || moneyOrQty.test(l);
+
+    // DIVISION-AGNOSTIC: Keep lines that indicate work scope
+    // Use generic construction keywords that apply to ALL CSI divisions
+    const scopeIndicators = /(install|furnish|provide|supply|demolish|remove|repair|replace|construct|build|fabricate|erect|place|pour|apply|coat|paint|finish|seal|waterproof|insulate|test|inspect|commission|balance|startup|certif|equipment|material|system|unit|assembly|component|schedule|quantity|specification)/i;
+    const moneyOrQty = /(\$\s?\d|\d+\s?(ea|each|qty|pcs?|sf|lf|sy|cy|cf|ls|ton|gal|lb)\b)/i;
+
+    // Keep if it has scope indicators OR money/quantity
+    return scopeIndicators.test(l) || moneyOrQty.test(l);
   };
 
   const detectSection = (line: string): string | null => {
@@ -287,10 +290,24 @@ export async function POST(req: NextRequest) {
     }
     return out;
   };
+  // Helper: detect parent headers that shouldn't be scope items
+  const isParentHeader = (s: string): boolean => {
+    return /(including the following|as follows|to include):\s*$/i.test(s);
+  };
+
   const candidateUnionSet = new Set<string>();
   for (const b of bidList) {
     const docs = byBidDocs[b.id] || { texts: [] };
-    for (const t of docs.texts) extractCandidatesFromText(t.name, t.text).forEach(s => candidateUnionSet.add(s));
+    for (const t of docs.texts) {
+      extractCandidatesFromText(t.name, t.text).forEach(s => {
+        // Strip prefixes BEFORE adding to set
+        const stripped = stripPrefix(s);
+        // Skip parent headers
+        if (!isParentHeader(stripped)) {
+          candidateUnionSet.add(stripped);
+        }
+      });
+    }
   }
   // Canonicalize against division dictionary and keep unique
   const canonicalCandidates: string[] = [];
@@ -304,16 +321,18 @@ export async function POST(req: NextRequest) {
   // Aggregator pass: ask model to propose unified candidate scope from all bids
   try {
     const aggContent: ContentBlockParam[] = [];
-    const aggIntro: TextBlockParam = { type: 'text', text: `You will propose a unified, normalized list of scope items for Division ${division || ''}. ONLY output JSON: {"scope_items": string[]}.
+    const divisionName = division ? `Division ${division}` : 'this construction project';
+    const aggIntro: TextBlockParam = { type: 'text', text: `You will propose a unified, normalized list of scope items for ${divisionName}. ONLY output JSON: {"scope_items": string[]}.
 
 CRITICAL RULES:
-- Consolidate granular items into higher-level categories (e.g., "a. Prefabricated steel skid 2 module condenser system" → "VRF/VRV system")
-- Use standard HVAC/mechanical terminology only
-- Ignore and exclude: company names, addresses, phone numbers, email headers, document references (drawings/specs), narrative text, section headers
-- DO NOT include: "Silicon Valley Mechanical", "2115 Ringwood Ave", "Attn:", "Dear", phone numbers, "MEP Drawings", "Specifications", etc.
-- Focus on actual work scope only: equipment, systems, services, materials, installation
+- Consolidate granular items into higher-level categories
+- Use standard construction/trade terminology appropriate for this division
+- Ignore and exclude: company names, addresses, phone numbers, email headers, document references (drawings/specs), narrative text, section headers, page numbers
+- DO NOT include: contractor company names, street addresses, "Attn:", "Dear", phone numbers, "Drawings", "Specifications", "Proposal", "Page X", etc.
+- Focus on actual work scope only: equipment, systems, services, materials, installation tasks
 - 20-50 items max (prefer fewer, well-normalized categories)
-- Do not include totals, qualifications, or exclusions` };
+- Do not include totals, qualifications, exclusions, or contract terms
+- Remove number/letter prefixes from all items (e.g., "a.", "1.", "i.")` };
     aggContent.push(aggIntro);
     let aggChars = 0;
     for (const b of bidList) {
@@ -326,7 +345,7 @@ CRITICAL RULES:
         aggChars += slice.length;
       }
     }
-    const aggSystem = `You are a construction estimator normalizing scope across multiple HVAC bids. Produce a clean, consolidated list of scope categories. Ignore boilerplate, addresses, company info. Consolidate specific equipment into general categories. Output 20-50 normalized items max.`;
+    const aggSystem = `You are a construction estimator normalizing scope across multiple contractor bids for ${divisionName}. Produce a clean, consolidated list of scope categories. Ignore boilerplate, addresses, company info. Consolidate specific items into general categories. Remove all number/letter prefixes. Output 20-50 normalized items max.`;
     const aggResp = await anthropic.messages.create({ model: MODEL, max_tokens: 1200, temperature: 0.1, system: aggSystem, messages: [{ role: 'user', content: aggContent }] } as unknown as Parameters<typeof anthropic.messages.create>[0]);
     const aggMsg = aggResp as unknown as { content?: Array<{ type: string; text?: string }> };
     const aggText = (Array.isArray(aggMsg.content) ? (aggMsg.content.find((b: unknown) => (typeof b === 'object' && b !== null && (b as { type?: string }).type === 'text')) as { type: string; text?: string } | undefined)?.text || '' : '') as string;
@@ -334,6 +353,8 @@ CRITICAL RULES:
     const proposed = Array.isArray(aggParsed.scope_items) ? aggParsed.scope_items : [];
     for (const s of proposed) {
       const stripped = stripPrefix(s);
+      // Skip parent headers
+      if (isParentHeader(stripped)) continue;
       const canon = canonize(scopeIndex, stripped) || stripped;
       if (!canonicalCandidates.includes(canon)) canonicalCandidates.push(canon);
     }
@@ -342,6 +363,7 @@ CRITICAL RULES:
   const candidateUnionFinal = canonicalCandidates
     .filter(s => !isTotalsLike(s))
     .filter(s => !isJunkLine(s))
+    .filter(s => !isParentHeader(s))
     .filter(s => s.length >= 3 && s.length <= 150)
     .slice(0, 100); // Limit to 100 max scope items
 
