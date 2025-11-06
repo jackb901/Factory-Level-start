@@ -239,6 +239,10 @@ export async function POST(req: NextRequest) {
     return t.length > 120 ? t.slice(0, 120) : t;
   };
 
+  // Explicit document-reference and narrative filters (division-agnostic)
+  const isDocRefLine = (line: string) => /(^|\b)(bid documents|drawings|plans|sheets?|sheet\s*no\.|specifications?|spec\s*section|division\s*\d+|addendum|rfi|submittals?|schedule|proposal\s*#|project\s*name|architect|engineer)\b/i.test(line);
+  const isNarrativeLine = (line: string) => /(^|\b)(thank you|we are assuming|we assume|assum(e|ptions)|shall|will\s+provide|please|sincerely|valid\s+for\s+\d+\s+days|warranty|lead\s*times?)\b/i.test(line);
+
   const domainKeep = (line: string) => {
     const l = line.toLowerCase();
     if (!/[a-z]/.test(l)) return false;
@@ -276,6 +280,7 @@ export async function POST(req: NextRequest) {
       for (const line of lines) {
         const first = (line.split(',')[0] || '').trim();
         if (!domainKeep(first)) continue;
+        if (isDocRefLine(first) || isNarrativeLine(first)) continue;
         const n = normalizeScope(first);
         if (n && /[a-zA-Z]/.test(n) && n.length >= 2) out.push(n);
       }
@@ -290,8 +295,10 @@ export async function POST(req: NextRequest) {
         const candRaw = m ? m[1] : line;
         // skip totals lines as scope candidates
         if (/(^|\b)(base\s*(?:bid|price)|total(?:\s*(?:price|amount))?|bid\s*amount|proposal\s*(?:total|amount))\b/i.test(candRaw)) continue;
-        // Prefer recognized sections, but allow high-signal lines even outside headers (division-agnostic verbs/quantities)
-        if (!(section ? domainKeep(candRaw) : domainKeep(candRaw))) continue;
+        if (isDocRefLine(candRaw) || isNarrativeLine(candRaw)) continue;
+        // Restrict to true scope-bearing sections only
+        if (!(section && (section === 'scope' || section === 'inclusions' || section === 'equipment'))) continue;
+        if (!domainKeep(candRaw)) continue;
         const n = normalizeScope(candRaw);
         if (n && /[a-zA-Z]/.test(n) && n.length >= 3) out.push(n);
       }
@@ -327,6 +334,7 @@ export async function POST(req: NextRequest) {
   candidateUnion = candidateUnion.slice(0, 300);
 
   // Aggregator pass: ask model to propose unified candidate scope from all bids
+  let aggList: string[] = [];
   try {
     const aggContent: ContentBlockParam[] = [];
     const divisionName = division ? `Division ${division}` : 'this construction project';
@@ -338,8 +346,9 @@ CRITICAL RULES:
 - Ignore and exclude: company names, addresses, phone numbers, email headers, document references (drawings/specs), narrative text, section headers, page numbers
 - DO NOT include: contractor company names, street addresses, "Attn:", "Dear", phone numbers, "Drawings", "Specifications", "Proposal", "Page X", etc.
 - Focus on actual work scope only: equipment, systems, services, materials, installation tasks
-- 20-50 items max (prefer fewer, well-normalized categories)
-- Do not include totals, qualifications, exclusions, or contract terms
+- OUTPUT STRICT NOUN PHRASES only (no sentences). Examples: "Ductwork", "VRF/VRV system", "Fire/smoke dampers".
+- 20-40 items max (prefer fewer, well-normalized categories)
+- Do not include totals, qualifications, exclusions, alternates, clarifications, or contract terms
 - Remove number/letter prefixes from all items (e.g., "a.", "1.", "i.")` };
     aggContent.push(aggIntro);
     let aggChars = 0;
@@ -353,7 +362,7 @@ CRITICAL RULES:
         aggChars += slice.length;
       }
     }
-    const aggSystem = `You are a construction estimator normalizing scope across multiple contractor bids for ${divisionName}. Produce a clean, consolidated list of scope categories. Ignore boilerplate, addresses, company info. Consolidate specific items into general categories. Remove all number/letter prefixes. Output 20-50 normalized items max.`;
+    const aggSystem = `You are a construction estimator normalizing scope across multiple contractor bids for ${divisionName}. Produce a clean, consolidated list of short noun-phrase scope categories. Ignore boilerplate, addresses, document references, clarifications, assumptions, warranty. Consolidate specifics into general categories. Remove all number/letter prefixes. Output 20-40 items.`;
     const aggResp = await anthropic.messages.create({ model: MODEL, max_tokens: 1200, temperature: 0.1, system: aggSystem, messages: [{ role: 'user', content: aggContent }] } as unknown as Parameters<typeof anthropic.messages.create>[0]);
     const aggMsg = aggResp as unknown as { content?: Array<{ type: string; text?: string }> };
     const aggText = (Array.isArray(aggMsg.content) ? (aggMsg.content.find((b: unknown) => (typeof b === 'object' && b !== null && (b as { type?: string }).type === 'text')) as { type: string; text?: string } | undefined)?.text || '' : '') as string;
@@ -366,15 +375,27 @@ CRITICAL RULES:
       const canon = canonize(scopeIndex, stripped) || stripped;
       if (!canonicalCandidates.includes(canon)) canonicalCandidates.push(canon);
     }
+    aggList = proposed.map(stripPrefix).filter(Boolean);
   } catch {}
+  // Prefer aggregator output first, then add cleaned leftovers
+  const prioritized = [...new Set([...(aggList || []).map(s => canonize(scopeIndex, s) || s), ...canonicalCandidates])];
   // Final aggressive filter: remove any junk that made it through
-  const candidateUnionFinal = canonicalCandidates
+  const candidateUnionFinal = prioritized
     .filter(s => !isTotalsLike(s))
     .filter(s => !isJunkLine(s))
     .filter(s => !isParentHeader(s))
+    .filter(s => !isDocRefLine(s) && !isNarrativeLine(s))
     .filter(s => s.length >= 3 && s.length <= 150)
     .map(s => capitalizeFirst(s)) // Capitalize first letter for consistency
     .slice(0, 100); // Limit to 100 max scope items
+
+  // Log noise metrics
+  try {
+    const rawCount = candidateUnionSet.size;
+    const finalCount = candidateUnionFinal.length;
+    const noiseRatio = rawCount ? Number(((rawCount - finalCount) / rawCount).toFixed(2)) : 0;
+    console.log('[Pass1] candidates_raw', rawCount, 'candidates_final', finalCount, 'noise_ratio', noiseRatio);
+  } catch {}
 
   const batches: typeof bidList[] = [];
   for (let i = 0; i < bidList.length; i += LIMITS.batchSize) batches.push(bidList.slice(i, i + LIMITS.batchSize));
@@ -425,7 +446,7 @@ CRITICAL RULES:
 OUTPUT FORMAT (JSON only):
 {
   "items": [
-    {"name": "exact match from CANDIDATE_SCOPE", "status": "included|excluded|not_specified", "price": number|null, "evidence": "brief quote showing this"}
+    {"name": "USE EXACT STRING FROM CANDIDATE_SCOPE", "status": "included|excluded|not_specified", "price": number|null, "evidence": "brief quote showing this"}
   ],
   "qualifications": {
     "includes": ["items explicitly listed as included"],
@@ -448,7 +469,7 @@ EXAMPLES (these patterns apply to ALL divisions - HVAC, concrete, electrical, pl
 - Bid: "a. 4000 psi concrete" → CANDIDATE_SCOPE: "Concrete" → MATCH ✓ (ignore spec details)
 - Bid: "1. Install 200A panel" → CANDIDATE_SCOPE: "Electrical panel" → MATCH ✓ (ignore prefix/capacity)
 
-KEY PRINCIPLE: If the bid describes providing/installing an item, and CANDIDATE_SCOPE has a similar item (ignoring prefixes, quantities, brands, specs), consider it a MATCH and mark as "included"
+KEY PRINCIPLE: If the bid describes providing/installing an item, and CANDIDATE_SCOPE has a similar item (ignoring prefixes, quantities, brands, specs), select the CLOSEST NAME FROM CANDIDATE_SCOPE and use that exact string; do not invent new names.
 
 STATUS RULES:
 1. "included" = ANY mention of this item in:
@@ -671,11 +692,37 @@ STATUS RULES:
     }
     // Enforce candidate_scope only; move others to unmapped
     const candidateSet = new Set(candidateUnionFinal.map(s => normalizeScope(s)));
+    const candidateArray = [...candidateSet];
+
+    // Simple division-agnostic fuzzy matcher
+    const normForMatch = (s: string) => s
+      .toLowerCase()
+      .replace(/\([^)]*\)/g, ' ')
+      .replace(/[^a-z\s/]/g, ' ') // keep slashes for VRF/VRV style
+      .replace(/\s+/g, ' ') 
+      .trim();
+    const tokens = (s: string) => new Set(normForMatch(s).split(' ').filter(w => w.length > 1));
+    const jaccard = (a: Set<string>, b: Set<string>) => {
+      let inter = 0; for (const t of a) if (b.has(t)) inter++;
+      const union = new Set<string>([...a, ...b]).size || 1;
+      return inter / union;
+    };
+    const nearestCandidate = (name: string): string | null => {
+      const ta = tokens(name);
+      let best = 0; let bestName: string | null = null;
+      for (const cand of candidateArray) {
+        const tb = tokens(cand);
+        if (ta.size && [...ta].every(t => tb.has(t))) { best = 1; bestName = cand; break; }
+        const score = jaccard(ta, tb);
+        if (score > best) { best = score; bestName = cand; }
+      }
+      return best >= 0.5 ? (bestName || null) : null;
+    };
     const kept: PerItem[] = [];
     const dropped: Unmapped[] = [];
     for (const it of items) {
       const ev = (typeof (it as unknown as { evidence?: string }).evidence === 'string') ? (it as unknown as { evidence?: string }).evidence as string : '';
-      const mappedDisplay = mapToCandidate(it.name);
+      const mappedDisplay = mapToCandidate(it.name) || nearestCandidate(it.name);
       if (mappedDisplay) {
         it.name = mappedDisplay; // align to displayed candidate row
         kept.push(it);
