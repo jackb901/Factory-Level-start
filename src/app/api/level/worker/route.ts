@@ -158,7 +158,8 @@ export async function POST(req: NextRequest) {
     return Number.isFinite(n) ? n : null;
   };
   const findTotalInText = (text: string): number | null => {
-    const re = /(base\s*bid|total(?:\s*(?:price|amount))?|bid\s*amount)\s*[:\-]?\s*\$?\s*([0-9][\d,]*(?:\.\d{2})?)/gi;
+    // Capture common phrasings across divisions: Base Bid, Base Price, Total, Bid Amount, Proposal Total
+    const re = /(base\s*(?:bid|price)|total(?:\s*(?:price|amount))?|bid\s*amount|proposal\s*(?:total|amount))\s*[:\-]?\s*\$?\s*([0-9][\d,]*(?:\.\d{2})?)/gi;
     let best: number | null = null;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
@@ -169,7 +170,7 @@ export async function POST(req: NextRequest) {
   };
 
   // Utility: identify totals-like strings that should never become scope items
-  const isTotalsLike = (s: string) => /(base\s*bid|total(?:\s*(?:price|amount))?|bid\s*amount|subtotal|sales\s*tax)/i.test(s);
+  const isTotalsLike = (s: string) => /(base\s*(?:bid|price)|total(?:\s*(?:price|amount))?|bid\s*amount|proposal\s*(?:total|amount)|subtotal|sales\s*tax)/i.test(s);
   const cleanEvidence = (t: string) => t
     // avoid truncation around colon-dollar patterns
     .replace(/:\s*\$(?=\s*\d)/g, ' $')
@@ -288,8 +289,9 @@ export async function POST(req: NextRequest) {
         const m = line.match(/^\s*(?:[-*•\u2022]|\d+\.|[A-Z][\w\s]{2,})\s*(.+)$/);
         const candRaw = m ? m[1] : line;
         // skip totals lines as scope candidates
-        if (/(^|\b)(base\s*bid|total(?:\s*(?:price|amount))?|bid\s*amount)\b/i.test(candRaw)) continue;
-        if (!(section && domainKeep(candRaw))) continue; // only from recognized sections
+        if (/(^|\b)(base\s*(?:bid|price)|total(?:\s*(?:price|amount))?|bid\s*amount|proposal\s*(?:total|amount))\b/i.test(candRaw)) continue;
+        // Prefer recognized sections, but allow high-signal lines even outside headers (division-agnostic verbs/quantities)
+        if (!(section ? domainKeep(candRaw) : domainKeep(candRaw))) continue;
         const n = normalizeScope(candRaw);
         if (n && /[a-zA-Z]/.test(n) && n.length >= 3) out.push(n);
       }
@@ -434,13 +436,19 @@ OUTPUT FORMAT (JSON only):
   "total": base_bid_total_or_null
 }
 
-MATCHING RULES (CRITICAL):
-- Use FUZZY MATCHING: Ignore prefixes (a., b., 1., 2., i., etc.), quantities in parentheses, and minor wording variations
-- If the bid mentions "b. (2) 8-branch selector boxes" and CANDIDATE_SCOPE has "8 branch selector boxes" → MATCH (included)
-- If the bid mentions "40-ton VRV system" and CANDIDATE_SCOPE has "VRF/VRV system" → MATCH (included)
-- If the bid mentions "Daikin Split Systems" and CANDIDATE_SCOPE has "Split system" → MATCH (included)
-- If the bid mentions "Greenheck Gravity Relief Ventilators" and CANDIDATE_SCOPE has "Gravity relief ventilators" → MATCH (included)
-- The bid documents have number/letter prefixes - IGNORE THEM when matching to CANDIDATE_SCOPE
+MATCHING RULES (CRITICAL - APPLY UNIVERSALLY TO ALL CONSTRUCTION TRADES):
+- Use FUZZY MATCHING: Ignore prefixes (a., b., 1., 2., i., etc.), quantities in parentheses, brand names, and minor wording variations
+- Match based on SEMANTIC MEANING, not exact text
+
+EXAMPLES (these patterns apply to ALL divisions - HVAC, concrete, electrical, plumbing, finishes, etc.):
+- Bid: "b. (2) 8-branch selector boxes" → CANDIDATE_SCOPE: "8 branch selector boxes" → MATCH ✓
+- Bid: "40-ton VRV system" → CANDIDATE_SCOPE: "VRF/VRV system" → MATCH ✓ (ignore quantity/variant)
+- Bid: "Daikin Split Systems" → CANDIDATE_SCOPE: "Split system" → MATCH ✓ (ignore brand)
+- Bid: "i. (3) coats paint" → CANDIDATE_SCOPE: "Paint coats" → MATCH ✓ (ignore prefix/quantity)
+- Bid: "a. 4000 psi concrete" → CANDIDATE_SCOPE: "Concrete" → MATCH ✓ (ignore spec details)
+- Bid: "1. Install 200A panel" → CANDIDATE_SCOPE: "Electrical panel" → MATCH ✓ (ignore prefix/capacity)
+
+KEY PRINCIPLE: If the bid describes providing/installing an item, and CANDIDATE_SCOPE has a similar item (ignoring prefixes, quantities, brands, specs), consider it a MATCH and mark as "included"
 
 STATUS RULES:
 1. "included" = ANY mention of this item in:
@@ -471,6 +479,7 @@ STATUS RULES:
     let combinedEvidence = '';
     const explicitExclusions: string[] = [];
     const explicitInclusions: string[] = [];
+    const explicitAlternates: string[] = [];
 
     // SIMPLIFIED APPROACH: Send raw text with minimal filtering (like Claude chat)
     for (const c of docs.texts) {
@@ -501,6 +510,10 @@ STATUS RULES:
         if (section === 'inclusions' && trimmed.length > 5) {
           const cleaned = trimmed.replace(/^\s*[\d\-\*•]+[\.\)]*\s*/, '');
           if (cleaned) explicitInclusions.push(cleaned);
+        }
+        if (section === 'alternates' && trimmed.length > 3) {
+          const cleaned = trimmed.replace(/^\s*[\d\-\*•]+[\.\)]*\s*/, '');
+          if (cleaned) explicitAlternates.push(cleaned);
         }
 
         // ONLY filter obvious junk (addresses, company names, phone numbers)
@@ -559,6 +572,7 @@ STATUS RULES:
       try { console.log('[level/worker] fallback_lenient', true); } catch {}
     }
     const detectedTotal = combinedEvidence ? findTotalInText(combinedEvidence) : null;
+    try { console.log(`[Pass2-Total] ${contractorName} detected_total=`, detectedTotal); } catch {}
 
     // Token budget: approx tokens ~= chars/4. Trim content to stay below ~30k input tokens.
     const estTokens = (blocks: ContentBlockParam[]) => {
@@ -670,7 +684,9 @@ STATUS RULES:
         dropped.push({ name: it.name, evidence: ev });
       }
     }
-    try { console.log('[level/worker] kept_vs_total', kept.length, '/', items.length); } catch {}
+    // Use only kept items mapped to candidate scope
+    items = kept.length > 0 ? kept : [];
+    try { console.log('[level/worker] kept_vs_total', kept.length, '/', (parsed.items || []).length); } catch {}
     // Persist raw response preview for audit
     try {
       const rawPreview = (text || '').slice(0, 10_000);
@@ -721,16 +737,21 @@ STATUS RULES:
           else if (candidateSet.has(normalizeScope(it.name))) kept2.push(it);
           else dropped2.push({ name: it.name, evidence: ev });
         }
-        if (kept2.length > 0) {
-          items = kept2;
-        } else {
-          items = [];
-        }
-        try { console.log('[level/worker] kept_vs_total_retry', items.length, '/', (parsed.items || []).length); } catch {}
+        // After retry, enforce kept2 gating as well
+        items = kept2.length > 0 ? kept2 : [];
+        try { console.log('[level/worker] kept_vs_total_retry', kept2.length, '/', (parsed.items || []).length); } catch {}
       } catch {}
     }
+    // Merge explicit alternates into qualifications in a non-duplicating, division-agnostic way
+    const mergeQual = (q: Qual | undefined): Qual => {
+      const out: Qual = q ? { ...q } : {};
+      const alts = new Set<string>(Array.isArray(out.alternates) ? out.alternates : []);
+      for (const a of explicitAlternates) { if (a && a.length > 2) alts.add(a); }
+      if (alts.size) out.alternates = Array.from(alts).slice(0, 100);
+      return out;
+    };
     const cidKey = b.contractor_id || 'unassigned';
-    per[cidKey] = { items: items, qualifications: parsed.qualifications, unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
+    per[cidKey] = { items: items, qualifications: mergeQual(parsed.qualifications), unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
     unmappedPer[cidKey] = [...(parsed.unmapped || []), ...dropped];
     done += 1;
     await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(90, Math.round((done / batches.length) * 85) + 5) }).eq('id', job.id);
