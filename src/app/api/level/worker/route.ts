@@ -186,6 +186,12 @@ export async function POST(req: NextRequest) {
       .trim();
   };
 
+  // Capitalize first letter for consistency
+  const capitalizeFirst = (s: string): string => {
+    if (!s) return s;
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  };
+
   // Detect and filter out non-scope junk - ULTRA CONSERVATIVE (only obvious header junk)
   const isJunkLine = (s: string): boolean => {
     const trimmed = s.trim();
@@ -365,6 +371,7 @@ CRITICAL RULES:
     .filter(s => !isJunkLine(s))
     .filter(s => !isParentHeader(s))
     .filter(s => s.length >= 3 && s.length <= 150)
+    .map(s => capitalizeFirst(s)) // Capitalize first letter for consistency
     .slice(0, 100); // Limit to 100 max scope items
 
   const batches: typeof bidList[] = [];
@@ -427,20 +434,36 @@ OUTPUT FORMAT (JSON only):
   "total": base_bid_total_or_null
 }
 
-INSTRUCTIONS:
-1. For each item in CANDIDATE_SCOPE below, determine the status:
-   - "included" = contractor explicitly provides this OR it's in their scope/inclusions sections OR pricing tables
-   - "excluded" = contractor explicitly lists this under EXCLUSIONS section or states "not included"
-   - "not_specified" = item is not mentioned in their bid at all
+MATCHING RULES (CRITICAL):
+- Use FUZZY MATCHING: Ignore prefixes (a., b., 1., 2., i., etc.), quantities in parentheses, and minor wording variations
+- If the bid mentions "b. (2) 8-branch selector boxes" and CANDIDATE_SCOPE has "8 branch selector boxes" → MATCH (included)
+- If the bid mentions "40-ton VRV system" and CANDIDATE_SCOPE has "VRF/VRV system" → MATCH (included)
+- If the bid mentions "Daikin Split Systems" and CANDIDATE_SCOPE has "Split system" → MATCH (included)
+- If the bid mentions "Greenheck Gravity Relief Ventilators" and CANDIDATE_SCOPE has "Gravity relief ventilators" → MATCH (included)
+- The bid documents have number/letter prefixes - IGNORE THEM when matching to CANDIDATE_SCOPE
 
-2. ONLY use "excluded" if explicitly listed in an exclusions section. If not mentioned, use "not_specified".
+STATUS RULES:
+1. "included" = ANY mention of this item in:
+   - Scope of work sections
+   - Equipment lists
+   - Installation descriptions
+   - "Furnish and install..." statements
+   - Pricing tables
+   - Basically: if they describe providing/installing this item, mark as "included"
 
-3. Match bid wording to closest CANDIDATE_SCOPE item (e.g., "VRF system" → "VRF/VRV system")
+2. "excluded" = ONLY if the item appears in an "EXCLUSIONS" or "NOT INCLUDED" section
+   - Do NOT mark as excluded just because it's missing - use "not_specified" instead
 
-4. Extract base bid total if present in the documents.` };
+3. "not_specified" = Item is completely absent from the bid (no mention at all in any section)
+
+4. Extract base bid total if present (look for "BASE BID", "BASE PRICE", "TOTAL", etc.)` };
     content.push(instruct);
     const candBlock: TextBlockParam = { type: 'text', text: `CANDIDATE_SCOPE (unified across all bids):\n${candidateUnionFinal.map((s,i)=>`${i+1}. ${s}`).join('\n')}` };
     content.push(candBlock);
+
+    // Debug: Log scope items being sent to Claude
+    try { console.log(`[Pass2-Scope] ${contractorName} - Sending ${candidateUnionFinal.length} scope items:`, candidateUnionFinal.slice(0, 10)); } catch {}
+
     content.push({ type: 'text', text: `--- Contractor: ${contractorName} (id ${b.contractor_id || 'unassigned'}) ---` });
     const docs = byBidDocs[b.id] || { texts: [] };
     // Limit evidence to ~30k tokens worth of chars
@@ -498,8 +521,14 @@ INSTRUCTIONS:
       combinedEvidence += '\n' + snippet;
 
       // Debug: log evidence stats with filter count
-      try { console.log(`[Pass2-ULTRA-LENIENT] ${contractorName} - kept ${kept.length} lines (filtered ${filteredCount}), ${fullText.length} chars from ${c.name}`); } catch {}
+      try { console.log(`[Pass2-Evidence] ${contractorName} - kept ${kept.length} lines (filtered ${filteredCount}), ${fullText.length} chars from ${c.name}`); } catch {}
     }
+
+    // Debug: Log sample of evidence to verify scope items are present
+    try {
+      const evidenceSample = combinedEvidence.split('\n').slice(0, 20).join('\n');
+      console.log(`[Pass2-Evidence-Sample] ${contractorName} - First 20 lines of evidence:`, evidenceSample.substring(0, 500));
+    } catch {}
 
     // Add structured exclusions/inclusions as separate guidance block
     if (explicitExclusions.length > 0 || explicitInclusions.length > 0) {
