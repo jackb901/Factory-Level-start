@@ -558,6 +558,7 @@ STATUS RULES:
     }
     // If evidence is too thin, add lenient fallback blocks using raw cleaned text
     const evidenceChars = (content as ContentBlockParam[]).reduce((acc, b) => acc + (b.type === 'text' ? (((b as TextBlockParam).text || '').length) : 0), 0);
+    try { console.log(`[Pass2-Qual] ${contractorName} alternates_found=`, explicitAlternates.length); } catch {}
     if (evidenceChars < 1500) {
       for (const c of docs.texts) {
         if (accChars > 160_000) break;
