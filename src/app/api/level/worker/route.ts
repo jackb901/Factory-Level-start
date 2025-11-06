@@ -239,9 +239,21 @@ export async function POST(req: NextRequest) {
     return t.length > 120 ? t.slice(0, 120) : t;
   };
 
-  // Explicit document-reference and narrative filters (division-agnostic)
-  const isDocRefLine = (line: string) => /(^|\b)(bid documents|drawings|plans|sheets?|sheet\s*no\.|specifications?|spec\s*section|division\s*\d+|addendum|rfi|submittals?|schedule|proposal\s*#|project\s*name|architect|engineer)\b/i.test(line);
-  const isNarrativeLine = (line: string) => /(^|\b)(thank you|we are assuming|we assume|assum(e|ptions)|shall|will\s+provide|please|sincerely|valid\s+for\s+\d+\s+days|warranty|lead\s*times?)\b/i.test(line);
+  // Normalize text for filtering regardless of bullets/punctuation
+  const normFilter = (s: string) => s
+    .toLowerCase()
+    .replace(/[•\-*_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // Explicit document-reference and narrative filters (division-agnostic, match anywhere)
+  const isDocRefLine = (line: string) => {
+    const l = normFilter(line);
+    return /(bid documents|drawings|architectural drawings|mep drawings|plans|sheet\s*no\.|sheets?|project\s*name|specifications?|spec\s*section|division\s*\d+|addendum|rfi|submittals?|schedule|proposal(\s*#)?|page\s*\d+)/i.test(l);
+  };
+  const isNarrativeLine = (line: string) => {
+    const l = normFilter(line);
+    return /(thank you|we are assuming|we assume|assum(e|ptions)|shall|will\s+provide|please|sincerely|valid\s+for\s+\d+\s+days|warranty|lead\s*times?|due to|this proposal is based)/i.test(l);
+  };
 
   const domainKeep = (line: string) => {
     const l = line.toLowerCase();
@@ -593,7 +605,9 @@ STATUS RULES:
       }
       try { console.log('[level/worker] fallback_lenient', true); } catch {}
     }
-    const detectedTotal = combinedEvidence ? findTotalInText(combinedEvidence) : null;
+    // Also scan all raw docs (untrimmed) for a more reliable total detection
+    const allDocsRaw = (docs.texts || []).map(t => t.text).join('\n').slice(0, 200000);
+    const detectedTotal = (combinedEvidence ? findTotalInText(combinedEvidence) : null) || (allDocsRaw ? findTotalInText(allDocsRaw) : null);
     try { console.log(`[Pass2-Total] ${contractorName} detected_total=`, detectedTotal); } catch {}
 
     // Token budget: approx tokens ~= chars/4. Trim content to stay below ~30k input tokens.
