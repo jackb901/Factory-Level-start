@@ -459,7 +459,7 @@ CRITICAL RULES:
 OUTPUT FORMAT (JSON only):
 {
   "items": [
-    {"name": "USE EXACT STRING FROM CANDIDATE_SCOPE", "status": "included|excluded|not_specified", "price": number|null, "evidence": "brief quote showing this"}
+    {"name": "USE EXACT STRING FROM CANDIDATE_SCOPE", "candidate_index": number|null, "status": "included|excluded|not_specified", "price": number|null, "evidence": "brief quote showing this"}
   ],
   "qualifications": {
     "includes": ["items explicitly listed as included"],
@@ -482,7 +482,9 @@ EXAMPLES (these patterns apply to ALL divisions - HVAC, concrete, electrical, pl
 - Bid: "a. 4000 psi concrete" → CANDIDATE_SCOPE: "Concrete" → MATCH ✓ (ignore spec details)
 - Bid: "1. Install 200A panel" → CANDIDATE_SCOPE: "Electrical panel" → MATCH ✓ (ignore prefix/capacity)
 
-KEY PRINCIPLE: If the bid describes providing/installing an item, and CANDIDATE_SCOPE has a similar item (ignoring prefixes, quantities, brands, specs), select the CLOSEST NAME FROM CANDIDATE_SCOPE and use that exact string; do not invent new names.
+KEY PRINCIPLE: If the bid describes providing/installing an item, and CANDIDATE_SCOPE has a similar item (ignoring prefixes, quantities, brands, specs), choose the CLOSEST item from CANDIDATE_SCOPE and:
+- set candidate_index to that row number (1-based) and copy its text into name; do not invent new names.
+- If no reasonable match, leave candidate_index null and use name as your best short noun-phrase.
 
 STATUS RULES:
 1. "included" = ANY mention of this item in:
@@ -732,11 +734,14 @@ NORMALIZATION RULES:
     const candidateArray = [...candidateSet];
 
     // Simple division-agnostic fuzzy matcher
+    const STOPWORDS = new Set<string>([
+      'furnish','install','provide','provided','providing','supply','supplied','includes','including','include','with','and','or','for','of','the','a','an','by','others','new','existing','system','systems','unit','units','type','per','as','shown','on','per','perplans','plan','plans','above','scope','work','complete','all'
+    ]);
     const normForMatch = (s: string) => s
       .toLowerCase()
       .replace(/\([^)]*\)/g, ' ')
       .replace(/[^a-z\s/]/g, ' ') // keep slashes for VRF/VRV style
-      .replace(/\s+/g, ' ') 
+      .replace(/\s+/g, ' ')
       .trim();
     const tokens = (s: string) => new Set(normForMatch(s).split(' ').filter(w => w.length > 1));
     const jaccard = (a: Set<string>, b: Set<string>) => {
@@ -753,13 +758,20 @@ NORMALIZATION RULES:
         const score = jaccard(ta, tb);
         if (score > best) { best = score; bestName = cand; }
       }
-      return best >= 0.5 ? (bestName || null) : null;
+      return best >= 0.3 ? (bestName || null) : null;
     };
     const kept: PerItem[] = [];
     const dropped: Unmapped[] = [];
     for (const it of items) {
       const ev = (typeof (it as unknown as { evidence?: string }).evidence === 'string') ? (it as unknown as { evidence?: string }).evidence as string : '';
-      const mappedDisplay = mapToCandidate(it.name) || nearestCandidate(it.name);
+      // Prefer explicit candidate_index from the model when provided
+      const idxRaw = (it as unknown as { candidate_index?: unknown }).candidate_index as unknown;
+      let mappedDisplay: string | null = null;
+      if (typeof idxRaw === 'number' && Number.isFinite(idxRaw)) {
+        const idx = Math.round(idxRaw);
+        if (idx >= 1 && idx <= candidateUnionFinal.length) mappedDisplay = candidateUnionFinal[idx - 1];
+      }
+      if (!mappedDisplay) mappedDisplay = mapToCandidate(it.name) || nearestCandidate(it.name);
       if (mappedDisplay) {
         it.name = mappedDisplay; // align to displayed candidate row
         kept.push(it);
@@ -817,7 +829,13 @@ NORMALIZATION RULES:
         const dropped2: Unmapped[] = [];
         for (const it of items) {
           const ev = (typeof (it as unknown as { evidence?: string }).evidence === 'string') ? (it as unknown as { evidence?: string }).evidence as string : '';
-          const mappedDisplay = mapToCandidate(it.name);
+          const idxRaw2 = (it as unknown as { candidate_index?: unknown }).candidate_index as unknown;
+          let mappedDisplay: string | null = null;
+          if (typeof idxRaw2 === 'number' && Number.isFinite(idxRaw2)) {
+            const idx2 = Math.round(idxRaw2);
+            if (idx2 >= 1 && idx2 <= candidateUnionFinal.length) mappedDisplay = candidateUnionFinal[idx2 - 1];
+          }
+          if (!mappedDisplay) mappedDisplay = mapToCandidate(it.name) || nearestCandidate(it.name);
           if (mappedDisplay) { it.name = mappedDisplay; kept2.push(it); }
           else if (candidateSet.has(normalizeScope(it.name))) kept2.push(it);
           else dropped2.push({ name: it.name, evidence: ev });
