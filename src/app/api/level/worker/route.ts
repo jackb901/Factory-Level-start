@@ -255,6 +255,7 @@ export async function POST(req: NextRequest) {
     const l = normFilter(line);
     return /(thank you|we are assuming|we assume|assum(e|ptions)|shall|will\s+provide|please|sincerely|valid\s+for\s+\d+\s+days|warranty|lead\s*times?|due to|this proposal is based)/i.test(l);
   };
+  const isAlternateLike = (line: string) => /\b(add|deduct)\s+alternate\b|\brvm\s+deduct\s+alternate\b/i.test(line);
 
   const domainKeep = (line: string) => {
     const l = line.toLowerCase();
@@ -331,7 +332,7 @@ export async function POST(req: NextRequest) {
         // Strip prefixes BEFORE adding to set
         const stripped = stripPrefix(s);
         // Skip parent headers
-        if (!isParentHeader(stripped)) {
+        if (!isParentHeader(stripped) && !isAlternateLike(stripped)) {
           candidateUnionSet.add(stripped);
         }
       });
@@ -737,13 +738,20 @@ NORMALIZATION RULES:
     const STOPWORDS = new Set<string>([
       'furnish','install','provide','provided','providing','supply','supplied','includes','including','include','with','and','or','for','of','the','a','an','by','others','new','existing','system','systems','unit','units','type','per','as','shown','on','per','perplans','plan','plans','above','scope','work','complete','all'
     ]);
+    const BRAND_WORDS = new Set<string>(['daikin','marley','greenheck','panasonic','bacnet']);
     const normForMatch = (s: string) => s
       .toLowerCase()
       .replace(/\([^)]*\)/g, ' ')
       .replace(/[^a-z\s/]/g, ' ') // keep slashes for VRF/VRV style
       .replace(/\s+/g, ' ')
       .trim();
-    const tokens = (s: string) => new Set(normForMatch(s).split(' ').filter(w => w.length > 1));
+    const stem = (w: string) => w.replace(/(ers|ies|s)$/,'');
+    const tokens = (s: string) => new Set(
+      normForMatch(s)
+        .split(' ')
+        .filter(w => w.length > 2 && !STOPWORDS.has(w) && !BRAND_WORDS.has(w))
+        .map(stem)
+    );
     const jaccard = (a: Set<string>, b: Set<string>) => {
       let inter = 0; for (const t of a) if (b.has(t)) inter++;
       const union = new Set<string>([...a, ...b]).size || 1;
@@ -758,7 +766,7 @@ NORMALIZATION RULES:
         const score = jaccard(ta, tb);
         if (score > best) { best = score; bestName = cand; }
       }
-      return best >= 0.3 ? (bestName || null) : null;
+      return best >= 0.2 ? (bestName || null) : null;
     };
     const kept: PerItem[] = [];
     const dropped: Unmapped[] = [];
@@ -783,7 +791,10 @@ NORMALIZATION RULES:
     }
     // Use only kept items mapped to candidate scope
     items = kept.length > 0 ? kept : [];
-    try { console.log('[level/worker] kept_vs_total', kept.length, '/', (parsed.items || []).length); } catch {}
+    try {
+      const sampleNames = (parsed.items || []).slice(0,5).map(it => (it as any).name);
+      console.log('[level/worker] parsed_items', (parsed.items || []).length, 'kept', kept.length, 'sample', sampleNames);
+    } catch {}
     // Persist raw response preview for audit
     try {
       const rawPreview = (text || '').slice(0, 10_000);
@@ -842,7 +853,10 @@ NORMALIZATION RULES:
         }
         // After retry, enforce kept2 gating as well
         items = kept2.length > 0 ? kept2 : [];
-        try { console.log('[level/worker] kept_vs_total_retry', kept2.length, '/', (parsed.items || []).length); } catch {}
+        try {
+          const sampleNames2 = (parsed.items || []).slice(0,5).map(it => (it as any).name);
+          console.log('[level/worker] parsed_items_retry', (parsed.items || []).length, 'kept', kept2.length, 'sample', sampleNames2);
+        } catch {}
       } catch {}
     }
     // Merge explicit alternates into qualifications in a non-duplicating, division-agnostic way
