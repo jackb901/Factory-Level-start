@@ -255,7 +255,8 @@ export async function POST(req: NextRequest) {
     const l = normFilter(line);
     return /(thank you|we are assuming|we assume|assum(e|ptions)|shall|will\s+provide|please|sincerely|valid\s+for\s+\d+\s+days|warranty|lead\s*times?|due to|this proposal is based)/i.test(l);
   };
-  const isAlternateLike = (line: string) => /\b(add|deduct)\s+alternate\b|\brvm\s+deduct\s+alternate\b/i.test(line);
+  // Do NOT filter alternates from scope; keep them as rows so prices can appear in matrix
+  const isAlternateLike = (_line: string) => false;
 
   const domainKeep = (line: string) => {
     const l = line.toLowerCase();
@@ -332,7 +333,7 @@ export async function POST(req: NextRequest) {
         // Strip prefixes BEFORE adding to set
         const stripped = stripPrefix(s);
         // Skip parent headers
-        if (!isParentHeader(stripped) && !isAlternateLike(stripped)) {
+        if (!isParentHeader(stripped)) {
           candidateUnionSet.add(stripped);
         }
       });
@@ -487,6 +488,12 @@ KEY PRINCIPLE: If the bid describes providing/installing an item, and CANDIDATE_
 - set candidate_index to that row number (1-based) and copy its text into name; do not invent new names.
 - If no reasonable match, leave candidate_index null and use name as your best short noun-phrase.
 
+ALTERNATES (IMPORTANT):
+- Treat each alternate line as an item in the items array in addition to listing in qualifications.alternates.
+- Map each alternate to the closest CANDIDATE_SCOPE row if present (use candidate_index); otherwise use the alternate text as name prefixed with "Alternate:".
+- Set price to the dollar amount on the line; use positive numbers for ADD alternates and negative for DEDUCT alternates.
+- Status: 'included' if the base bid includes this alternate or the text says it is accepted; 'excluded' if explicitly not included/declined; otherwise 'not_specified'.
+
 STATUS RULES:
 1. "included" = ANY mention of this item in:
    - Scope of work sections
@@ -602,7 +609,7 @@ NORMALIZATION RULES:
       console.log(`[Pass2-Evidence-Sample] ${contractorName} - First 20 lines of evidence:`, evidenceSample.substring(0, 500));
     } catch {}
 
-    // Add structured exclusions/inclusions as separate guidance block
+    // Add structured exclusions/inclusions/alternates as separate guidance block
     if (explicitExclusions.length > 0 || explicitInclusions.length > 0) {
       let structuredBlock = '\n=== STRUCTURED QUALIFICATIONS ===\n';
       if (explicitInclusions.length > 0) {
@@ -614,6 +621,11 @@ NORMALIZATION RULES:
       }
       content.push({ type: 'text', text: structuredBlock });
       accChars += structuredBlock.length;
+    }
+    if (explicitAlternates.length > 0) {
+      const altsBlock = `\n=== EXPLICIT ALTERNATES (ALSO ADD TO items WITH PRICE) ===\n${explicitAlternates.slice(0,100).map((x,i)=>`${i+1}. ${x}`).join('\n')}\n`;
+      content.push({ type: 'text', text: altsBlock });
+      accChars += altsBlock.length;
     }
     // If evidence is too thin, add lenient fallback blocks using raw cleaned text
     const evidenceChars = (content as ContentBlockParam[]).reduce((acc, b) => acc + (b.type === 'text' ? (((b as TextBlockParam).text || '').length) : 0), 0);
