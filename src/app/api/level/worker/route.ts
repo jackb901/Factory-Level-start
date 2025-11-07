@@ -12,6 +12,7 @@ export async function POST(req: NextRequest) {
   const auth = req.headers.get('authorization') || req.headers.get('Authorization');
   if (!auth) return NextResponse.json({ error: 'Missing Authorization header' }, { status: 401 });
   const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { global: { headers: { Authorization: auth } } });
+  try { console.log('[version]', process.env.VERCEL_GIT_COMMIT_SHA || 'local'); } catch {}
 
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const XLSX = await import("xlsx");
@@ -520,6 +521,7 @@ NORMALIZATION RULES:
 - Totals may appear as 'BASE BID', 'BASE PRICE', 'BID AMOUNT', or 'TOTAL' with a dollar amount; prefer BASE BID if multiple
 ` };
     content.push(preface);
+    try { console.log('[prompt] preface_included', true); } catch {}
     const candBlock: TextBlockParam = { type: 'text', text: `CANDIDATE_SCOPE (unified across all bids):\n${candidateUnionFinal.map((s,i)=>`${i+1}. ${s}`).join('\n')}` };
     content.push(candBlock);
 
