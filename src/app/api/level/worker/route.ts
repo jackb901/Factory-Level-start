@@ -499,6 +499,27 @@ STATUS RULES:
 
 4. Extract base bid total if present (look for "BASE BID", "BASE PRICE", "TOTAL", etc.)` };
     content.push(instruct);
+    // Preface describing the extracted text format to reduce confusion
+    const preface: TextBlockParam = { type: 'text', text: `SOURCE FORMAT (READ CAREFULLY):
+The following evidence is extracted PDF text from contractor bid proposals. It is provided as sequential text lines per page; lines may be broken across lines or hyphenated, and bullets/prefixes (•, -, a., 1.) may appear. Some tables may be rendered as CSV. Treat each '=== DOCUMENT: ... ===' block as sequential text from the same file.
+
+WHAT TO IGNORE COMPLETELY:
+- Letterheads, addresses, phone/email, license lines
+- Document references and headers: Bid Documents, Drawings, Specifications, Sheets/Sheet No., Schedule, Proposal #, Page X, Project Name
+- Clarifications, assumptions, warranty paragraphs, thanks/salutations, boilerplate
+
+WHAT TO USE AS EVIDENCE:
+- Scope of Work / Inclusions / Equipment lists and installation descriptions
+- SOV/equipment tables
+- Explicit EXCLUSIONS / NOT INCLUDED sections for exclusions
+- Alternates under 'ADD ALTERNATE(S)' or 'Alternates' headers (capture description and amount when present)
+
+NORMALIZATION RULES:
+- Join split phrases; ignore brand names and quantities; ignore minor wording variants
+- Map findings to the CLOSEST item in CANDIDATE_SCOPE and use that exact name
+- Totals may appear as 'BASE BID', 'BASE PRICE', 'BID AMOUNT', or 'TOTAL' with a dollar amount; prefer BASE BID if multiple
+` };
+    content.push(preface);
     const candBlock: TextBlockParam = { type: 'text', text: `CANDIDATE_SCOPE (unified across all bids):\n${candidateUnionFinal.map((s,i)=>`${i+1}. ${s}`).join('\n')}` };
     content.push(candBlock);
 
