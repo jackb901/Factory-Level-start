@@ -255,6 +255,15 @@ export async function POST(req: NextRequest) {
     const l = normFilter(line);
     return /(thank you|we are assuming|we assume|assum(e|ptions)|shall|will\s+provide|please|sincerely|valid\s+for\s+\d+\s+days|warranty|lead\s*times?|due to|this proposal is based)/i.test(l);
   };
+  // Additional boilerplate/business lines that should not become scope
+  const isBoilerplateLine = (line: string) => {
+    const l = normFilter(line);
+    return /(
+      reserves\s+the\s+right|lock\s*in\s+pricing|make\s+every\s+effort|adequate\s+access|break\s+area|laydown\s+space|
+      workmanship|free\s+from\s+defects|period\s+of\s+one|upload\s+per\s+week|ftp\s+site|parking\s+and\s+material\s+staging|equipment\s+storage|
+      provide\s+construction\s+services|permit\s+plan\s*check|traffic\s+control|closeout\s+documentation|clean[- ]?up|general\s+conditions
+    )/ix.test(l);
+  };
   // Do NOT filter alternates from scope; keep them as rows so prices can appear in matrix
   const isAlternateLike = (_line: string) => false;
 
@@ -295,7 +304,7 @@ export async function POST(req: NextRequest) {
       for (const line of lines) {
         const first = (line.split(',')[0] || '').trim();
         if (!domainKeep(first)) continue;
-        if (isDocRefLine(first) || isNarrativeLine(first)) continue;
+        if (isDocRefLine(first) || isNarrativeLine(first) || isBoilerplateLine(first)) continue;
         const n = normalizeScope(first);
         if (n && /[a-zA-Z]/.test(n) && n.length >= 2) out.push(n);
       }
@@ -310,7 +319,7 @@ export async function POST(req: NextRequest) {
         const candRaw = m ? m[1] : line;
         // skip totals lines as scope candidates
         if (/(^|\b)(base\s*(?:bid|price)|total(?:\s*(?:price|amount))?|bid\s*amount|proposal\s*(?:total|amount))\b/i.test(candRaw)) continue;
-        if (isDocRefLine(candRaw) || isNarrativeLine(candRaw)) continue;
+        if (isDocRefLine(candRaw) || isNarrativeLine(candRaw) || isBoilerplateLine(candRaw)) continue;
         // Restrict to true scope-bearing sections only
         if (!(section && (section === 'scope' || section === 'inclusions' || section === 'equipment'))) continue;
         if (!domainKeep(candRaw)) continue;
@@ -782,6 +791,18 @@ NORMALIZATION RULES:
     };
     const kept: PerItem[] = [];
     const dropped: Unmapped[] = [];
+    // Helper to parse alternates like "add alternate ... $ 7,600" or "deduct alternate ... < $ 4,200 >"
+    const parseAlt = (s: string): { name: string; price: number|null } | null => {
+      const text = s.trim();
+      const m = text.match(/\$\s*<?\s*([0-9][\d,\s]*(?:\.\d{2})?)/i);
+      if (!m) return null;
+      const num = Number((m[1] || '').replace(/[\s,]/g, ''));
+      if (!Number.isFinite(num)) return null;
+      const neg = /\b(deduct)\b|<\s*\$/i.test(text);
+      const price = neg ? -num : num;
+      const name = text.replace(/\$\s*<?\s*[0-9][\d,\s]*(?:\.\d{2})?/i, '').trim();
+      return { name: name ? `Alternate: ${name}` : 'Alternate', price };
+    };
     for (const it of items) {
       const ev = (typeof (it as unknown as { evidence?: string }).evidence === 'string') ? (it as unknown as { evidence?: string }).evidence as string : '';
       // Prefer explicit candidate_index from the model when provided
@@ -800,6 +821,16 @@ NORMALIZATION RULES:
       } else {
         dropped.push({ name: it.name, evidence: ev });
       }
+    }
+    // Ensure alternates appear as items with price even if model missed them
+    if (explicitAlternates.length) {
+      for (const a of explicitAlternates) {
+        const parsedAlt = parseAlt(a);
+        if (!parsedAlt) continue;
+        const exists = kept.some(k => normalizeScope(k.name) === normalizeScope(parsedAlt.name));
+        if (!exists) kept.push({ name: parsedAlt.name, status: 'not_specified', price: parsedAlt.price });
+      }
+      items = kept;
     }
     // Use only kept items mapped to candidate scope
     items = kept.length > 0 ? kept : [];
