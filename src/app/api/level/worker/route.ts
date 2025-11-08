@@ -571,7 +571,6 @@ REQUIREMENTS (division-agnostic):
 - There are exactly ${candidateUnionFinal.length} rows in CANDIDATE_SCOPE. Output ONE item per row, in order, with candidate_index = 1..${candidateUnionFinal.length} and the status for that row. If you cannot find any mention, use not_specified.
 - You may set price when a clear dollar amount is tied to that exact row; otherwise null.
 - Evidence must be a small, verbatim fragment.
-` };
 
 STATUS RULES:
 1) included = clear mention of furnishing/providing/installing or present in scope/equipment/SOV.
