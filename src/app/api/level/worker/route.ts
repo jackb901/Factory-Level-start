@@ -194,6 +194,24 @@ export async function POST(req: NextRequest) {
     return s.charAt(0).toUpperCase() + s.slice(1);
   };
 
+  // Normalize an alternate line to a clean scope row, dropping amounts and boilerplate
+  const normalizeAlternateTitle = (s: string): string | null => {
+    let t = s.trim();
+    if (!t) return null;
+    // Remove dollar amounts and bracketed deduct markers
+    t = t.replace(/\$\s*<?\s*[0-9][\d,\s]*(?:\.\d{2})?\s*>?/g, ' ');
+    // Remove leading common phrases
+    t = t.replace(/^\s*(the\s+)?(add|deduct)\s+alternate\s*(to|for)?\s*/i, '')
+         .replace(/^\s*alternate\s*:?\s*/i, '')
+         .replace(/^\s*at\s*/i, '');
+    // Drop trailing 'is' / 'is:'
+    t = t.replace(/\bis\s*:?\s*$/i, '').trim();
+    // Collapse whitespace
+    t = t.replace(/\s+/g, ' ').trim();
+    if (!t) return null;
+    return `Alternate: ${capitalizeFirst(t)}`;
+  };
+
   // Detect and filter out non-scope junk - ULTRA CONSERVATIVE (only obvious header junk)
   const isJunkLine = (s: string): boolean => {
     const trimmed = s.trim();
@@ -316,7 +334,13 @@ export async function POST(req: NextRequest) {
         // skip totals lines as scope candidates
         if (/(^|\b)(base\s*(?:bid|price)|total(?:\s*(?:price|amount))?|bid\s*amount|proposal\s*(?:total|amount))\b/i.test(candRaw)) continue;
         if (isDocRefLine(candRaw) || isNarrativeLine(candRaw) || isBoilerplateLine(candRaw)) continue;
-        // Restrict to true scope-bearing sections only
+        // Alternates: include, but normalize the title
+        if (section === 'alternates') {
+          const alt = normalizeAlternateTitle(candRaw);
+          if (alt) out.push(alt);
+          continue;
+        }
+        // Restrict to true scope-bearing sections only (plus alternates handled above)
         if (!(section && (section === 'scope' || section === 'inclusions' || section === 'equipment'))) continue;
         if (!domainKeep(candRaw)) continue;
         const n = normalizeScope(candRaw);
@@ -387,7 +411,12 @@ CRITICAL RULES:
     const aggMsg = aggResp as unknown as { content?: Array<{ type: string; text?: string }> };
     const aggText = (Array.isArray(aggMsg.content) ? (aggMsg.content.find((b: unknown) => (typeof b === 'object' && b !== null && (b as { type?: string }).type === 'text')) as { type: string; text?: string } | undefined)?.text || '' : '') as string;
     const aggParsed = (() => { try { return JSON.parse(aggText) as { scope_items?: string[] }; } catch { try { return JSON.parse((aggText.match(/\{[\s\S]*\}/)?.[0] || '{}')) as { scope_items?: string[] }; } catch { return { scope_items: [] }; } } })();
-    const proposed = Array.isArray(aggParsed.scope_items) ? aggParsed.scope_items : [];
+    let proposed = Array.isArray(aggParsed.scope_items) ? aggParsed.scope_items : [];
+    // Normalize alternates in the aggregator output as well
+    proposed = proposed.map(s => {
+      const alt = normalizeAlternateTitle(s);
+      return alt || s;
+    });
     for (const s of proposed) {
       const stripped = stripPrefix(s);
       // Skip parent headers
@@ -708,7 +737,7 @@ NORMALIZATION RULES:
       const currentMeta = (job.meta ?? {}) as Record<string, unknown>;
       await supabase.from('processing_jobs').update({ meta: { ...currentMeta, debug: metaDbg } }).eq('id', job.id);
     } catch {}
-    const system = `You are a construction estimator building a Division-level bid leveling matrix. Ignore letterheads, addresses, and proposal boilerplate. Focus on Scope of Work, Inclusions/Exclusions/Alternates/Allowances, equipment lists and SOV tables. Strict JSON only.`;
+    const system = `You are a construction estimator building a Division-level bid leveling matrix. Ignore letterheads, addresses, and proposal boilerplate. Focus on Scope of Work, Inclusions/Exclusions/Alternates/Allowances, equipment lists and SOV tables. When listing alternates, set candidate_index where possible and include price in the item. Strict JSON only.`;
 
     const callClaudeWithRetry = async (tries = 4) => {
       let attempt = 0;
@@ -796,8 +825,8 @@ NORMALIZATION RULES:
       if (!Number.isFinite(num)) return null;
       const neg = /\b(deduct)\b|<\s*\$/i.test(text);
       const price = neg ? -num : num;
-      const name = text.replace(/\$\s*<?\s*[0-9][\d,\s]*(?:\.\d{2})?/i, '').trim();
-      return { name: name ? `Alternate: ${name}` : 'Alternate', price };
+      const norm = normalizeAlternateTitle(text) || 'Alternate';
+      return { name: norm, price };
     };
     for (const it of items) {
       const ev = (typeof (it as unknown as { evidence?: string }).evidence === 'string') ? (it as unknown as { evidence?: string }).evidence as string : '';
