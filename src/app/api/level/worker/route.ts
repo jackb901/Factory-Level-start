@@ -809,7 +809,7 @@ NORMALIZATION RULES:
     const normStatus = (s: string): 'included'|'excluded'|'not_specified'|null => {
       const v = String(s || '').toLowerCase().trim();
       if (v === 'included' || v === 'exclude' || v === 'excluded' || v === 'not_specified') {
-        return v === 'exclude' ? 'excluded' : (v as any);
+        return v === 'exclude' ? 'excluded' : (v as 'included'|'excluded'|'not_specified');
       }
       if (v === 'yes' || v === 'y') return 'included';
       if (v === 'no' || v === 'n') return 'excluded';
