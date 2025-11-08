@@ -19,6 +19,8 @@ export default function DivisionReportPage() {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [hidden, setHidden] = useState<Record<string, boolean>>({});
+  const [rawPreview, setRawPreview] = useState<string>("");
+  const [showRaw, setShowRaw] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -35,6 +37,15 @@ export default function DivisionReportPage() {
       if (error) { setReport(null); setLoading(false); return; }
       const rep = (Array.isArray(data) && data[0] && (data[0] as { report: Report }).report) || null;
       setReport(rep);
+      // Fetch latest processing job debug preview for this job/division
+      const { data: pj } = await supabase
+        .from('processing_jobs')
+        .select('meta, created_at')
+        .eq('job_id', id)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      const raw = Array.isArray(pj) && pj[0] && (pj[0] as { meta?: any }).meta?.debug?.raw_response_preview;
+      if (typeof raw === 'string') setRawPreview(raw);
       setLoading(false);
     })();
   }, [id, code, supabase]);
@@ -59,6 +70,18 @@ export default function DivisionReportPage() {
   return (
     <main className="min-h-dvh p-6 space-y-4 bg-[#0a2540] text-white">
       <h1 className="text-2xl font-semibold">Division {code} — Bid Level Report</h1>
+      {rawPreview && (
+        <div className="rounded border border-white/20 p-3 bg-white/5">
+          <button className="border rounded px-2 py-0.5 text-xs" onClick={() => setShowRaw(v => !v)}>
+            {showRaw ? 'Hide raw Claude output' : 'Show raw Claude output'}
+          </button>
+          {showRaw && (
+            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-xs font-mono">
+              {rawPreview}
+            </pre>
+          )}
+        </div>
+      )}
       <div className="overflow-auto">
         <table className="min-w-full text-sm">
           <thead>
