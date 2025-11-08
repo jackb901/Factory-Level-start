@@ -908,7 +908,7 @@ NORMALIZATION RULES:
         const exists = kept.some(k => normalizeScope(k.name) === normalizeScope(parsedAlt.name));
         if (!exists) kept.push({ name: parsedAlt.name, status: 'not_specified', price: parsedAlt.price });
       }
-      items = kept;
+      // Note: we do not overwrite the normalized items collection here; 'kept' will be merged below
     }
     // Fill in any missing rows with not_specified, then collapse duplicates with precedence: included > excluded > not_specified
     const precedence: Record<string, number> = { included: 3, excluded: 2, not_specified: 1 } as const;
