@@ -930,8 +930,8 @@ NORMALIZATION RULES:
         prev.price = it.price;
       }
     }
-    // Use only kept items mapped to candidate scope
-    items = Array.from(collapsedMap.values());
+    // Build final items array from collapsed map
+    const finalItems: PerItem[] = Array.from(collapsedMap.values());
     try {
       const toLog: Array<{ name?: string }> = Array.isArray(parsed.items) ? (parsed.items as Array<{ name?: string }>) : [];
       const sampleNames = toLog.slice(0,5).map(it => it?.name || '').filter(Boolean);
@@ -946,7 +946,7 @@ NORMALIZATION RULES:
     } catch {}
 
     // If model returned zero items, retry once with fully lenient evidence (raw cleaned text blocks)
-    if (kept.length === 0 && items.length === 0) {
+    if (kept.length === 0 && finalItems.length === 0) {
       try { console.log('[level/worker] retry_lenient', true); } catch {}
       const content2: ContentBlockParam[] = [];
       content2.push(instruct);
@@ -1020,7 +1020,7 @@ NORMALIZATION RULES:
           if (!prev2 || precedence2[it2.status] > precedence2[prev2.status]) collapsedMap2.set(key2, it2);
           else if (prev2 && prev2.price == null && typeof it2.price === 'number') prev2.price = it2.price;
         }
-        items = Array.from(collapsedMap2.values());
+        const finalItems2: PerItem[] = Array.from(collapsedMap2.values());
         try {
           const toLog2: Array<{ name?: string }> = Array.isArray(parsed.items) ? (parsed.items as Array<{ name?: string }>) : [];
           const sampleNames2 = toLog2.slice(0,5).map(it => it?.name || '').filter(Boolean);
@@ -1037,7 +1037,8 @@ NORMALIZATION RULES:
       return out;
     };
     const cidKey = b.contractor_id || 'unassigned';
-    per[cidKey] = { items: items, qualifications: mergeQual(parsed.qualifications), unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
+    const chosenItems = (kept.length || finalItems.length) ? (kept.length ? finalItems : finalItems) : [];
+    per[cidKey] = { items: chosenItems, qualifications: mergeQual(parsed.qualifications), unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
     unmappedPer[cidKey] = [...(parsed.unmapped || []), ...dropped];
     done += 1;
     await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(90, Math.round((done / batches.length) * 85) + 5) }).eq('id', job.id);
