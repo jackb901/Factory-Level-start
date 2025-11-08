@@ -199,7 +199,7 @@ export async function POST(req: NextRequest) {
     const trimmed = s.trim();
     if (trimmed.length < 2) return true; // Empty or nearly empty
 
-    const l = trimmed.toLowerCase();
+    // const l = trimmed.toLowerCase(); // not used
 
     // ONLY filter obvious letterhead/header junk that appears standalone
     // Company name ONLY if it's by itself on the line
@@ -804,8 +804,9 @@ NORMALIZATION RULES:
     // Use only kept items mapped to candidate scope
     items = kept.length > 0 ? kept : [];
     try {
-      const sampleNames = (parsed.items || []).slice(0,5).map(it => (it as any).name);
-      console.log('[level/worker] parsed_items', (parsed.items || []).length, 'kept', kept.length, 'sample', sampleNames);
+      const toLog: Array<{ name?: string }> = Array.isArray(parsed.items) ? (parsed.items as Array<{ name?: string }>) : [];
+      const sampleNames = toLog.slice(0,5).map(it => it?.name || '').filter(Boolean);
+      console.log('[level/worker] parsed_items', toLog.length, 'kept', kept.length, 'sample', sampleNames);
     } catch {}
     // Persist raw response preview for audit
     try {
@@ -866,8 +867,9 @@ NORMALIZATION RULES:
         // After retry, enforce kept2 gating as well
         items = kept2.length > 0 ? kept2 : [];
         try {
-          const sampleNames2 = (parsed.items || []).slice(0,5).map(it => (it as any).name);
-          console.log('[level/worker] parsed_items_retry', (parsed.items || []).length, 'kept', kept2.length, 'sample', sampleNames2);
+          const toLog2: Array<{ name?: string }> = Array.isArray(parsed.items) ? (parsed.items as Array<{ name?: string }>) : [];
+          const sampleNames2 = toLog2.slice(0,5).map(it => it?.name || '').filter(Boolean);
+          console.log('[level/worker] parsed_items_retry', toLog2.length, 'kept', kept2.length, 'sample', sampleNames2);
         } catch {}
       } catch {}
     }
