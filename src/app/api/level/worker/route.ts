@@ -538,12 +538,12 @@ CRITICAL RULES:
     const b = batch[0];
     let content: ContentBlockParam[] = [];
     const contractorName = b.contractor_id ? (contractorsMap[b.contractor_id] || 'Contractor') : 'Contractor';
-    const instruct: TextBlockParam = { type: 'text', text: `Analyze this contractor's bid documents and determine which scope items they include or exclude.
+    const instruct: TextBlockParam = { type: 'text', text: `Analyze this contractor's bid documents and determine, for each row in CANDIDATE_SCOPE, whether it is included, excluded, or not_specified.
 
 OUTPUT FORMAT (JSON only):
 {
   "items": [
-    {"name": "USE EXACT STRING FROM CANDIDATE_SCOPE", "candidate_index": number|null, "status": "included|excluded|not_specified", "price": number|null, "evidence": "brief quote showing this"}
+    {"candidate_index": number, "status": "included|excluded|not_specified", "price": number|null, "evidence": "short quote that proves this"}
   ],
   "qualifications": {
     "includes": ["items explicitly listed as included"],
@@ -554,43 +554,18 @@ OUTPUT FORMAT (JSON only):
   "total": base_bid_total_or_null
 }
 
-MATCHING RULES (CRITICAL - APPLY UNIVERSALLY TO ALL CONSTRUCTION TRADES):
-- Use FUZZY MATCHING: Ignore prefixes (a., b., 1., 2., i., etc.), quantities in parentheses, brand names, and minor wording variations
-- Match based on SEMANTIC MEANING, not exact text
-
-EXAMPLES (these patterns apply to ALL divisions - HVAC, concrete, electrical, plumbing, finishes, etc.):
-- Bid: "b. (2) 8-branch selector boxes" → CANDIDATE_SCOPE: "8 branch selector boxes" → MATCH ✓
-- Bid: "40-ton VRV system" → CANDIDATE_SCOPE: "VRF/VRV system" → MATCH ✓ (ignore quantity/variant)
-- Bid: "Daikin Split Systems" → CANDIDATE_SCOPE: "Split system" → MATCH ✓ (ignore brand)
-- Bid: "i. (3) coats paint" → CANDIDATE_SCOPE: "Paint coats" → MATCH ✓ (ignore prefix/quantity)
-- Bid: "a. 4000 psi concrete" → CANDIDATE_SCOPE: "Concrete" → MATCH ✓ (ignore spec details)
-- Bid: "1. Install 200A panel" → CANDIDATE_SCOPE: "Electrical panel" → MATCH ✓ (ignore prefix/capacity)
-
-KEY PRINCIPLE: If the bid describes providing/installing an item, and CANDIDATE_SCOPE has a similar item (ignoring prefixes, quantities, brands, specs), choose the CLOSEST item from CANDIDATE_SCOPE and:
-- set candidate_index to that row number (1-based) and copy its text into name; do not invent new names.
-- If no reasonable match, leave candidate_index null and use name as your best short noun-phrase.
-
-ALTERNATES (IMPORTANT):
-- Treat each alternate line as an item in the items array in addition to listing in qualifications.alternates.
-- Map each alternate to the closest CANDIDATE_SCOPE row if present (use candidate_index); otherwise use the alternate text as name prefixed with "Alternate:".
-- Set price to the dollar amount on the line; use positive numbers for ADD alternates and negative for DEDUCT alternates.
-- Status: 'included' if the base bid includes this alternate or the text says it is accepted; 'excluded' if explicitly not included/declined; otherwise 'not_specified'.
+REQUIREMENTS (division-agnostic):
+- candidate_index is 1-based and REQUIRED for every entry in items. Only include rows you can positively label as included or excluded; you may omit not_specified rows to keep output concise.
+- Evidence must be a small, verbatim fragment.
+- Price: set only when a clear dollar amount is tied to that exact scope row (SOV row or alternate). Otherwise null.
 
 STATUS RULES:
-1. "included" = ANY mention of this item in:
-   - Scope of work sections
-   - Equipment lists
-   - Installation descriptions
-   - "Furnish and install..." statements
-   - Pricing tables
-   - Basically: if they describe providing/installing this item, mark as "included"
+1) included = clear mention of furnishing/providing/installing or present in scope/equipment/SOV.
+2) excluded = appears in EXCLUSIONS/NOT INCLUDED.
+3) not_specified = no mention anywhere (do NOT infer exclusion on silence).
 
-2. "excluded" = ONLY if the item appears in an "EXCLUSIONS" or "NOT INCLUDED" section
-   - Do NOT mark as excluded just because it's missing - use "not_specified" instead
-
-3. "not_specified" = Item is completely absent from the bid (no mention at all in any section)
-
-4. Extract base bid total if present (look for "BASE BID", "BASE PRICE", "TOTAL", etc.)` };
+ALTERNATES:
+- If CANDIDATE_SCOPE contains alternate rows, set status and price for those using the dollar amount (ADD positive, DEDUCT negative).` };
     content.push(instruct);
     // Preface describing the extracted text format to reduce confusion
     const preface: TextBlockParam = { type: 'text', text: `SOURCE FORMAT (READ CAREFULLY):
@@ -818,7 +793,11 @@ NORMALIZATION RULES:
     const text = block?.text || '{}';
     const tryParse = (t: string) => { try { return JSON.parse(t) as { items?: PerItem[]; qualifications?: Qual; total?: number|null; unmapped?: Unmapped[] }; } catch { return null; } };
     let parsed = tryParse(text) || tryParse((text.match(/\{[\s\S]*\}/)?.[0] || '')) || { items: [], qualifications: {}, total: null, unmapped: [] } as { items?: PerItem[]; qualifications?: Qual; total?: number|null; unmapped?: Unmapped[] };
-    let items = Array.isArray(parsed.items) ? parsed.items.filter(x => typeof x?.name === 'string' && typeof x?.status === 'string') : [];
+    let items = Array.isArray(parsed.items)
+      ? parsed.items.filter(x => typeof (x as any)?.status === 'string' && (
+          typeof (x as any)?.name === 'string' || typeof (x as any)?.candidate_index === 'number'
+        ))
+      : [];
     // Canonicalize item names to dictionary
     for (const it of items) {
       const mapped = canonize(scopeIndex, it.name);
@@ -885,7 +864,11 @@ NORMALIZATION RULES:
         const idx = Math.round(idxRaw);
         if (idx >= 1 && idx <= candidateUnionFinal.length) mappedDisplay = candidateUnionFinal[idx - 1];
       }
-      if (!mappedDisplay) mappedDisplay = mapToCandidate(it.name) || nearestCandidate(it.name);
+      // If no index, fall back to name mapping (if present)
+      if (!mappedDisplay) {
+        const nm = (it as any)?.name as string | undefined;
+        if (typeof nm === 'string' && nm) mappedDisplay = mapToCandidate(nm) || nearestCandidate(nm);
+      }
       if (mappedDisplay) {
         it.name = mappedDisplay; // align to displayed candidate row
         kept.push(it);
@@ -905,8 +888,22 @@ NORMALIZATION RULES:
       }
       items = kept;
     }
+    // Collapse duplicates per candidate row with precedence: included > excluded > not_specified
+    const precedence: Record<string, number> = { included: 3, excluded: 2, not_specified: 1 } as const;
+    const collapsedMap = new Map<string, PerItem>();
+    for (const it of kept) {
+      const key = normalizeScope(it.name);
+      const prev = key ? collapsedMap.get(key) : undefined;
+      if (!key) continue;
+      if (!prev || precedence[it.status] > precedence[prev.status]) {
+        collapsedMap.set(key, it);
+      } else if (prev && prev.price == null && typeof it.price === 'number') {
+        // keep better price if previous had none
+        prev.price = it.price;
+      }
+    }
     // Use only kept items mapped to candidate scope
-    items = kept.length > 0 ? kept : [];
+    items = collapsedMap.size ? Array.from(collapsedMap.values()) : [];
     try {
       const toLog: Array<{ name?: string }> = Array.isArray(parsed.items) ? (parsed.items as Array<{ name?: string }>) : [];
       const sampleNames = toLog.slice(0,5).map(it => it?.name || '').filter(Boolean);
@@ -952,7 +949,11 @@ NORMALIZATION RULES:
         const blk2 = Array.isArray(m2.content) ? (m2.content.find((bb: unknown) => (typeof bb === 'object' && bb !== null && (bb as { type?: string }).type === 'text' && typeof (bb as { text?: unknown }).text === 'string')) as { type: string; text?: string } | undefined) : undefined;
         const txt2 = blk2?.text || '{}';
         parsed = tryParse(txt2) || tryParse((txt2.match(/\{[\s\S]*\}/)?.[0] || '')) || { items: [], qualifications: {}, total: null, unmapped: [] } as { items?: PerItem[]; qualifications?: Qual; total?: number|null; unmapped?: Unmapped[] };
-        items = Array.isArray(parsed.items) ? parsed.items.filter(x => typeof x?.name === 'string' && typeof x?.status === 'string') : [];
+        items = Array.isArray(parsed.items)
+          ? parsed.items.filter(x => typeof (x as any)?.status === 'string' && (
+              typeof (x as any)?.name === 'string' || typeof (x as any)?.candidate_index === 'number'
+            ))
+          : [];
         const kept2: PerItem[] = [];
         const dropped2: Unmapped[] = [];
         for (const it of items) {
@@ -963,13 +964,25 @@ NORMALIZATION RULES:
             const idx2 = Math.round(idxRaw2);
             if (idx2 >= 1 && idx2 <= candidateUnionFinal.length) mappedDisplay = candidateUnionFinal[idx2 - 1];
           }
-          if (!mappedDisplay) mappedDisplay = mapToCandidate(it.name) || nearestCandidate(it.name);
+          if (!mappedDisplay) {
+            const nm2 = (it as any)?.name as string | undefined;
+            if (typeof nm2 === 'string' && nm2) mappedDisplay = mapToCandidate(nm2) || nearestCandidate(nm2);
+          }
           if (mappedDisplay) { it.name = mappedDisplay; kept2.push(it); }
           else if (candidateSet.has(normalizeScope(it.name))) kept2.push(it);
           else dropped2.push({ name: it.name, evidence: ev });
         }
-        // After retry, enforce kept2 gating as well
-        items = kept2.length > 0 ? kept2 : [];
+        // After retry, collapse duplicates per candidate row
+        const precedence2: Record<string, number> = { included: 3, excluded: 2, not_specified: 1 } as const;
+        const collapsedMap2 = new Map<string, PerItem>();
+        for (const it2 of kept2) {
+          const key2 = normalizeScope(it2.name);
+          const prev2 = key2 ? collapsedMap2.get(key2) : undefined;
+          if (!key2) continue;
+          if (!prev2 || precedence2[it2.status] > precedence2[prev2.status]) collapsedMap2.set(key2, it2);
+          else if (prev2 && prev2.price == null && typeof it2.price === 'number') prev2.price = it2.price;
+        }
+        items = collapsedMap2.size ? Array.from(collapsedMap2.values()) : [];
         try {
           const toLog2: Array<{ name?: string }> = Array.isArray(parsed.items) ? (parsed.items as Array<{ name?: string }>) : [];
           const sampleNames2 = toLog2.slice(0,5).map(it => it?.name || '').filter(Boolean);
