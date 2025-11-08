@@ -507,6 +507,44 @@ CRITICAL RULES:
     console.log('[Pass1] candidates_raw', rawCount, 'candidates_final', finalCount, 'noise_ratio', noiseRatio);
   } catch {}
 
+  // Build lightweight, division-agnostic hint terms for each candidate row to help mapping
+  const STOP = new Set<string>(['the','and','or','of','for','to','with','by','in','on','a','an','new','existing','work','scope']);
+  const singular = (w: string) => w.replace(/(ies)$/,'y').replace(/(s)$/,'');
+  const basicVariants = (w: string): string[] => {
+    const s = singular(w);
+    const forms = new Set<string>([w, s, `${s}s`]);
+    return Array.from(forms).filter(Boolean);
+  };
+  // Generic pattern-based expansions used across divisions
+  const patternHints = (s: string): string[] => {
+    const l = s.toLowerCase();
+    const hints: string[] = [];
+    if (/test\s*and\s*balance|testing\s*&?\s*balanc/i.test(l)) hints.push('test & balance','testing & balancing','tab','nebb','air balance');
+    if (/louver|diffuser|register|grille|grd/i.test(l)) hints.push('louver','diffuser','register','grille','grd','lgrd');
+    if (/fire\/?smoke|smoke\s*damper|fire\s*damper|fsd/i.test(l)) hints.push('fire damper','smoke damper','fire/smoke damper','fsd');
+    if (/duct/i.test(l)) hints.push('duct','sheet metal','rectangular','spiral','smacna');
+    if (/vrf|vrv/i.test(l)) hints.push('vrf','vrv','variable refrigerant');
+    if (/split\s*system/i.test(l)) hints.push('split system','dx split','condensing unit','fan coil');
+    if (/temperature\s*control|controls?/i.test(l)) hints.push('controls','bms','ems','dcc');
+    if (/seismic|bracing/i.test(l)) hints.push('seismic','bracing','anchorage');
+    if (/refrigerant\s*pip/i.test(l)) hints.push('refrigerant piping','ref piping','line set');
+    if (/air\s*distribution/i.test(l)) hints.push('supply air','return air','exhaust air');
+    if (/close\s*out|closeout/i.test(l)) hints.push('closeout','as-builts','o&m');
+    if (/crane|rigging/i.test(l)) hints.push('crane','rigging','hoisting');
+    if (/equipment\s*receiv|haul/i.test(l)) hints.push('receiving','hauling','delivery');
+    if (/alternat/i.test(l)) hints.push('add alternate','deduct alternate','alternate');
+    return hints;
+  };
+  const makeHints = (name: string): string[] => {
+    const tokens = name.toLowerCase().replace(/[^a-z0-9\s/]/g,' ').split(/\s+/).filter(w => w && !STOP.has(w));
+    const tset = new Set<string>();
+    for (const t of tokens.slice(0,6)) basicVariants(t).forEach(v => tset.add(v));
+    patternHints(name).forEach(v => tset.add(v));
+    // limit to 6 hints to control token usage
+    return Array.from(tset).slice(0,6);
+  };
+  const hintsPerRow: string[][] = candidateUnionFinal.map(makeHints);
+
   const batches: typeof bidList[] = [];
   for (let i = 0; i < bidList.length; i += LIMITS.batchSize) batches.push(bidList.slice(i, i + LIMITS.batchSize));
   await supabase.from('processing_jobs').update({ batches_total: batches.length }).eq('id', job.id);
@@ -604,6 +642,15 @@ NORMALIZATION RULES:
     try { console.log('[prompt] preface_included', true); } catch {}
     const candBlock: TextBlockParam = { type: 'text', text: `CANDIDATE_SCOPE (unified across all bids):\n${candidateUnionFinal.map((s,i)=>`${i+1}. ${s}`).join('\n')}` };
     content.push(candBlock);
+    // Provide lightweight per-row hints to guide mapping
+    const hintsTextLines: string[] = [];
+    for (let i = 0; i < candidateUnionFinal.length; i++) {
+      const hs = hintsPerRow[i] || [];
+      if (hs.length) hintsTextLines.push(`${i+1}. HINTS: ${hs.join(', ')}`);
+    }
+    if (hintsTextLines.length) {
+      content.push({ type: 'text', text: `ROW HINTS (use as synonyms/keywords when determining status; still apply evidence rules):\n${hintsTextLines.join('\n')}` });
+    }
 
     // Debug: Log scope items being sent to Claude
     try { console.log(`[Pass2-Scope] ${contractorName} - Sending ${candidateUnionFinal.length} scope items:`, candidateUnionFinal.slice(0, 10)); } catch {}
