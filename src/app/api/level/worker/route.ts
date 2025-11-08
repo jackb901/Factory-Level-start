@@ -816,15 +816,14 @@ NORMALIZATION RULES:
       if (v === 'ns' || v === 'na' || v === 'n/a' || v === 'not specified') return 'not_specified';
       return null;
     };
-    let items = Array.isArray(parsed.items)
-      ? parsed.items.filter(x => typeof (x as any)?.status === 'string' && (
-          typeof (x as any)?.name === 'string' || typeof (x as any)?.candidate_index === 'number'
-        ))
-      : [];
-    // Canonicalize item names to dictionary
-    for (const it of items) {
-      const mapped = canonize(scopeIndex, it.name);
-      if (mapped) it.name = mapped;
+    type ModelItemIn = Partial<{ name: string; candidate_index: number; status: string; price: number|null; evidence: string }>;
+    const rawItems: ModelItemIn[] = Array.isArray(parsed.items) ? (parsed.items as unknown as ModelItemIn[]) : [];
+    // Pre-normalize (no 'any')
+    const normalizedIn: Array<ModelItemIn & { status: 'included'|'excluded'|'not_specified' } > = [];
+    for (const it of rawItems) {
+      const st = typeof it.status === 'string' ? normStatus(it.status) : null;
+      if (!st) continue;
+      normalizedIn.push({ ...it, status: st });
     }
     // Enforce candidate_scope only; move others to unmapped
     const candidateSet = new Set(candidateUnionFinal.map(s => normalizeScope(s)));
@@ -878,13 +877,11 @@ NORMALIZATION RULES:
       const norm = normalizeAlternateTitle(text) || 'Alternate';
       return { name: norm, price };
     };
-    for (const it of items) {
-      const ev = (typeof (it as unknown as { evidence?: string }).evidence === 'string') ? (it as unknown as { evidence?: string }).evidence as string : '';
-      const stNorm = normStatus((it as any).status);
-      if (!stNorm) continue;
-      (it as any).status = stNorm;
+    for (const it of normalizedIn) {
+      const ev = typeof it.evidence === 'string' ? it.evidence : '';
+      const stNorm = it.status;
       // Prefer explicit candidate_index from the model when provided
-      const idxRaw = (it as unknown as { candidate_index?: unknown }).candidate_index as unknown;
+      const idxRaw = it.candidate_index as unknown;
       let mappedDisplay: string | null = null;
       if (typeof idxRaw === 'number' && Number.isFinite(idxRaw)) {
         const idx = Math.round(idxRaw);
@@ -892,16 +889,15 @@ NORMALIZATION RULES:
       }
       // If no index, fall back to name mapping (if present)
       if (!mappedDisplay) {
-        const nm = (it as any)?.name as string | undefined;
+        const nm = it.name as string | undefined;
         if (typeof nm === 'string' && nm) mappedDisplay = mapToCandidate(nm) || nearestCandidate(nm);
       }
       if (mappedDisplay) {
-        it.name = mappedDisplay; // align to displayed candidate row
-        kept.push(it);
-      } else if (candidateSet.has(normalizeScope(it.name))) {
-        kept.push(it);
+        kept.push({ name: mappedDisplay, status: stNorm, price: typeof it.price === 'number' ? it.price : null, notes: undefined });
+      } else if (it.name && candidateSet.has(normalizeScope(it.name))) {
+        kept.push({ name: it.name, status: stNorm, price: typeof it.price === 'number' ? it.price : null, notes: undefined });
       } else {
-        dropped.push({ name: it.name, evidence: ev });
+        dropped.push({ name: it.name || '', evidence: ev });
       }
     }
     // Ensure alternates appear as items with price even if model missed them
@@ -981,31 +977,32 @@ NORMALIZATION RULES:
         const blk2 = Array.isArray(m2.content) ? (m2.content.find((bb: unknown) => (typeof bb === 'object' && bb !== null && (bb as { type?: string }).type === 'text' && typeof (bb as { text?: unknown }).text === 'string')) as { type: string; text?: string } | undefined) : undefined;
         const txt2 = blk2?.text || '{}';
         parsed = tryParse(txt2) || tryParse((txt2.match(/\{[\s\S]*\}/)?.[0] || '')) || { items: [], qualifications: {}, total: null, unmapped: [] } as { items?: PerItem[]; qualifications?: Qual; total?: number|null; unmapped?: Unmapped[] };
-        items = Array.isArray(parsed.items)
-          ? parsed.items.filter(x => typeof (x as any)?.status === 'string' && (
-              typeof (x as any)?.name === 'string' || typeof (x as any)?.candidate_index === 'number'
-            ))
-          : [];
+        type ModelItemIn = Partial<{ name: string; candidate_index: number; status: string; price: number|null; evidence: string }>;
+        const rawItems2: ModelItemIn[] = Array.isArray(parsed.items) ? (parsed.items as unknown as ModelItemIn[]) : [];
+        const normalizedIn2: Array<ModelItemIn & { status: 'included'|'excluded'|'not_specified' }> = [];
+        for (const it of rawItems2) {
+          const st = typeof it.status === 'string' ? normStatus(it.status) : null;
+          if (!st) continue;
+          normalizedIn2.push({ ...it, status: st });
+        }
         const kept2: PerItem[] = [];
         const dropped2: Unmapped[] = [];
-        for (const it of items) {
-          const ev = (typeof (it as unknown as { evidence?: string }).evidence === 'string') ? (it as unknown as { evidence?: string }).evidence as string : '';
-          const idxRaw2 = (it as unknown as { candidate_index?: unknown }).candidate_index as unknown;
+        for (const it of normalizedIn2) {
+          const ev = typeof it.evidence === 'string' ? it.evidence : '';
+          const idxRaw2 = it.candidate_index as unknown;
           let mappedDisplay: string | null = null;
           if (typeof idxRaw2 === 'number' && Number.isFinite(idxRaw2)) {
         const idx2 = Math.round(idxRaw2);
             if (idx2 >= 1 && idx2 <= candidateUnionFinal.length) mappedDisplay = candidateUnionFinal[idx2 - 1];
           }
           if (!mappedDisplay) {
-            const nm2 = (it as any)?.name as string | undefined;
+            const nm2 = it.name as string | undefined;
             if (typeof nm2 === 'string' && nm2) mappedDisplay = mapToCandidate(nm2) || nearestCandidate(nm2);
           }
-          const stNorm2 = normStatus((it as any).status);
-          if (!stNorm2) continue;
-          (it as any).status = stNorm2;
-          if (mappedDisplay) { it.name = mappedDisplay; kept2.push(it); }
-          else if (candidateSet.has(normalizeScope(it.name))) kept2.push(it);
-          else dropped2.push({ name: it.name, evidence: ev });
+          const stNorm2 = it.status;
+          if (mappedDisplay) { kept2.push({ name: mappedDisplay, status: stNorm2, price: typeof it.price === 'number' ? it.price : null }); }
+          else if (it.name && candidateSet.has(normalizeScope(it.name))) kept2.push({ name: it.name, status: stNorm2, price: typeof it.price === 'number' ? it.price : null });
+          else dropped2.push({ name: it.name || '', evidence: ev });
         }
         // After retry, collapse duplicates per candidate row
         const precedence2: Record<string, number> = { included: 3, excluded: 2, not_specified: 1 } as const;
