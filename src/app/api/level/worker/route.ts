@@ -209,6 +209,8 @@ export async function POST(req: NextRequest) {
     // Drop trailing 'is' / 'is:' and common phrasing like "the add alternate for/to"
     t = t.replace(/\bthe\s+add\s+alternate\s+(?:to|for)\s+/i, '');
     t = t.replace(/\bis\s*:?\s*$/i, '').trim();
+    // Drop a leading standalone 'the '
+    t = t.replace(/^\s*the\s+/i, '');
     // Collapse whitespace
     t = t.replace(/\s+/g, ' ').trim();
     // Skip non-descriptive alternates like just 'Unit'
@@ -224,7 +226,7 @@ export async function POST(req: NextRequest) {
     if (/^equipment\s+and\s+scope\s+of\s+work\b/.test(l)) return null;
     if (/^period\s+of\s+one\b/.test(l)) return null;
     // Canonicalize common scope phrases across divisions
-    if (/^testing?\s*(?:&|and)\s*balanc/i.test(l)) return 'Test and balance';
+    if (/^test(?:ing)?\s*(?:&|and)\s*balanc/i.test(l)) return 'Test and balance';
     return s;
   };
 
@@ -444,7 +446,7 @@ CRITICAL RULES:
       const hasAltSignal = /\balternat(e|es|e:)|\b(add|deduct)\s+alternate\b|\$\s*\d/i.test(s);
       if (hasAltSignal) {
         const alt = normalizeAlternateTitle(s);
-        return alt || s;
+        return alt || '';
       }
       return s;
     });
@@ -473,7 +475,7 @@ CRITICAL RULES:
       // Re-normalize alternates if any phrasing slipped through
       if (/\balternate\b/i.test(s)) {
         const altNorm = normalizeAlternateTitle(s);
-        if (altNorm) s = altNorm;
+        if (altNorm) s = altNorm; else continue; // drop bare 'Alternate' or non-descriptive lines
       }
       s = capitalizeFirst(s);
       const key = s.toLowerCase();
