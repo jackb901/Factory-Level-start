@@ -305,7 +305,8 @@ export async function POST(req: NextRequest) {
     if (/(\binclusions?\b|^\s*inclu\w*|^\s*inclusio\w*|^\s*included?\b|what'?s?\s*included)/.test(l)) return 'inclusions';
     if (/(\bexclusions?\b|^\s*exclu\w*|^\s*excluded?\b|not\s*included|what'?s?\s*excluded)/.test(l)) return 'exclusions';
     if (/(\ballowances?\b|^\s*allowan\w*)/.test(l)) return 'allowances';
-    if (/(\balternates?\b|^\s*alternat\w*|^\s*options?\b)/.test(l)) return 'alternates';
+    // Treat only explicit 'alternate' headers as alternates; 'options' is too generic
+    if (/(\balternates?\b|^\s*alternat\w*)/.test(l)) return 'alternates';
     if (/(equipment\s*(list|schedule)|bill\s*of\s*materials|schedule\s*of\s*values|materials\s*list)/.test(l)) return 'equipment';
     if (/(\bservices\b|commissioning|testing\s*&?\s*balancing|^\s*clarifications?\b|^\s*notes?\b)/.test(l)) return 'services';
     return null;
@@ -412,10 +413,14 @@ CRITICAL RULES:
     const aggText = (Array.isArray(aggMsg.content) ? (aggMsg.content.find((b: unknown) => (typeof b === 'object' && b !== null && (b as { type?: string }).type === 'text')) as { type: string; text?: string } | undefined)?.text || '' : '') as string;
     const aggParsed = (() => { try { return JSON.parse(aggText) as { scope_items?: string[] }; } catch { try { return JSON.parse((aggText.match(/\{[\s\S]*\}/)?.[0] || '{}')) as { scope_items?: string[] }; } catch { return { scope_items: [] }; } } })();
     let proposed = Array.isArray(aggParsed.scope_items) ? aggParsed.scope_items : [];
-    // Normalize alternates in the aggregator output as well
+    // Normalize alternates in the aggregator output only when clearly alternate-like
     proposed = proposed.map(s => {
-      const alt = normalizeAlternateTitle(s);
-      return alt || s;
+      const hasAltSignal = /\balternat(e|es|e:)|\b(add|deduct)\s+alternate\b|\$\s*\d/i.test(s);
+      if (hasAltSignal) {
+        const alt = normalizeAlternateTitle(s);
+        return alt || s;
+      }
+      return s;
     });
     for (const s of proposed) {
       const stripped = stripPrefix(s);
