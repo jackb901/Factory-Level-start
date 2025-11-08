@@ -807,6 +807,16 @@ NORMALIZATION RULES:
     const text = block?.text || '{}';
     const tryParse = (t: string) => { try { return JSON.parse(t) as { items?: PerItem[]; qualifications?: Qual; total?: number|null; unmapped?: Unmapped[] }; } catch { return null; } };
     let parsed = tryParse(text) || tryParse((text.match(/\{[\s\S]*\}/)?.[0] || '')) || { items: [], qualifications: {}, total: null, unmapped: [] } as { items?: PerItem[]; qualifications?: Qual; total?: number|null; unmapped?: Unmapped[] };
+    const normStatus = (s: string): 'included'|'excluded'|'not_specified'|null => {
+      const v = String(s || '').toLowerCase().trim();
+      if (v === 'included' || v === 'exclude' || v === 'excluded' || v === 'not_specified') {
+        return v === 'exclude' ? 'excluded' : (v as any);
+      }
+      if (v === 'yes' || v === 'y') return 'included';
+      if (v === 'no' || v === 'n') return 'excluded';
+      if (v === 'ns' || v === 'na' || v === 'n/a' || v === 'not specified') return 'not_specified';
+      return null;
+    };
     let items = Array.isArray(parsed.items)
       ? parsed.items.filter(x => typeof (x as any)?.status === 'string' && (
           typeof (x as any)?.name === 'string' || typeof (x as any)?.candidate_index === 'number'
@@ -871,6 +881,9 @@ NORMALIZATION RULES:
     };
     for (const it of items) {
       const ev = (typeof (it as unknown as { evidence?: string }).evidence === 'string') ? (it as unknown as { evidence?: string }).evidence as string : '';
+      const stNorm = normStatus((it as any).status);
+      if (!stNorm) continue;
+      (it as any).status = stNorm;
       // Prefer explicit candidate_index from the model when provided
       const idxRaw = (it as unknown as { candidate_index?: unknown }).candidate_index as unknown;
       let mappedDisplay: string | null = null;
@@ -981,13 +994,16 @@ NORMALIZATION RULES:
           const idxRaw2 = (it as unknown as { candidate_index?: unknown }).candidate_index as unknown;
           let mappedDisplay: string | null = null;
           if (typeof idxRaw2 === 'number' && Number.isFinite(idxRaw2)) {
-            const idx2 = Math.round(idxRaw2);
+        const idx2 = Math.round(idxRaw2);
             if (idx2 >= 1 && idx2 <= candidateUnionFinal.length) mappedDisplay = candidateUnionFinal[idx2 - 1];
           }
           if (!mappedDisplay) {
             const nm2 = (it as any)?.name as string | undefined;
             if (typeof nm2 === 'string' && nm2) mappedDisplay = mapToCandidate(nm2) || nearestCandidate(nm2);
           }
+          const stNorm2 = normStatus((it as any).status);
+          if (!stNorm2) continue;
+          (it as any).status = stNorm2;
           if (mappedDisplay) { it.name = mappedDisplay; kept2.push(it); }
           else if (candidateSet.has(normalizeScope(it.name))) kept2.push(it);
           else dropped2.push({ name: it.name, evidence: ev });
