@@ -206,7 +206,8 @@ export async function POST(req: NextRequest) {
          .replace(/^\s*at\s*/i, '');
     // Remove leftover numbering/prefixes after phrase removal
     t = t.replace(/^\s*(?:\d+\.|[ivxIVX]+\.|\([a-z0-9]+\))\s*/, '');
-    // Drop trailing 'is' / 'is:'
+    // Drop trailing 'is' / 'is:' and common phrasing like "the add alternate for/to"
+    t = t.replace(/\bthe\s+add\s+alternate\s+(?:to|for)\s+/i, '');
     t = t.replace(/\bis\s*:?\s*$/i, '').trim();
     // Collapse whitespace
     t = t.replace(/\s+/g, ' ').trim();
@@ -459,14 +460,29 @@ CRITICAL RULES:
   // Prefer aggregator output first, then add cleaned leftovers
   const prioritized = [...new Set([...(aggList || []).map(s => canonize(scopeIndex, s) || s), ...canonicalCandidates])];
   // Final aggressive filter: remove any junk that made it through
-  const candidateUnionFinal = prioritized
-    .filter(s => !isTotalsLike(s))
-    .filter(s => !isJunkLine(s))
-    .filter(s => !isParentHeader(s))
-    .filter(s => !isDocRefLine(s) && !isNarrativeLine(s))
-    .filter(s => s.length >= 3 && s.length <= 150)
-    .map(s => capitalizeFirst(s)) // Capitalize first letter for consistency
-    .slice(0, 100); // Limit to 100 max scope items
+  // Finalize candidates with additional normalization + dedupe
+  const finalizeCandidates = (arr: string[]): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (let s of arr) {
+      if (isTotalsLike(s) || isJunkLine(s) || isParentHeader(s) || isDocRefLine(s) || isNarrativeLine(s)) continue;
+      if (s.length < 3 || s.length > 150) continue;
+      // Generic reductions (e.g., long 'test and balance' sentences)
+      const reduced = reduceGeneric(s);
+      s = reduced ?? s;
+      // Re-normalize alternates if any phrasing slipped through
+      if (/\balternate\b/i.test(s)) {
+        const altNorm = normalizeAlternateTitle(s);
+        if (altNorm) s = altNorm;
+      }
+      s = capitalizeFirst(s);
+      const key = s.toLowerCase();
+      if (!seen.has(key)) { seen.add(key); out.push(s); }
+      if (out.length >= 100) break;
+    }
+    return out;
+  };
+  const candidateUnionFinal = finalizeCandidates(prioritized);
 
   // Log noise metrics
   try {
