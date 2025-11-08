@@ -665,6 +665,8 @@ NORMALIZATION RULES:
     const explicitAlternates: string[] = [];
 
     // SIMPLIFIED APPROACH: Send raw text with minimal filtering (like Claude chat)
+    // Collect lines for row-specific evidence
+    const collectedLines: string[] = [];
     for (const c of docs.texts) {
       if (accChars > 200_000) break; // Allow more text
 
@@ -710,6 +712,8 @@ NORMALIZATION RULES:
       }
 
       const fullText = kept.join('\n');
+      // accumulate kept lines for row-evidence mining
+      collectedLines.push(...kept);
       const snippet = fullText.length > 10000 ? fullText.slice(0, 10000) : fullText; // Increased from 8000
       const t: TextBlockParam = { type: 'text', text: `=== DOCUMENT: ${c.name} ===\n${snippet}\n` };
       content.push(t);
@@ -724,6 +728,39 @@ NORMALIZATION RULES:
     try {
       const evidenceSample = combinedEvidence.split('\n').slice(0, 20).join('\n');
       console.log(`[Pass2-Evidence-Sample] ${contractorName} - First 20 lines of evidence:`, evidenceSample.substring(0, 500));
+    } catch {}
+
+    // Build per-row evidence snippets based on hints (limit to keep token budget)
+    try {
+      const norm = (s: string) => s.toLowerCase();
+      const snippetsPerRow: string[][] = [];
+      const maxPerRow = 3;
+      const maxSnippetLen = 180;
+      for (let i = 0; i < candidateUnionFinal.length; i++) snippetsPerRow[i] = [];
+      for (let i = 0; i < candidateUnionFinal.length; i++) {
+        const hints = (hintsPerRow[i] || []).filter(Boolean);
+        if (!hints.length) continue;
+        const hintRes: RegExp[] = hints.map(h => {
+          const esc = h.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+          return new RegExp(`\\b${esc}\\b`, 'i');
+        });
+        for (const ln of collectedLines) {
+          if (snippetsPerRow[i].length >= maxPerRow) break;
+          const l = ln.trim(); if (!l) continue;
+          // skip obvious junk/doc refs
+          if (isDocRefLine(l) || isNarrativeLine(l) || isBoilerplateLine(l)) continue;
+          const hit = hintRes.some(r => r.test(l)) || hints.some(h => norm(l).includes(h.toLowerCase()));
+          if (hit) snippetsPerRow[i].push(l.length > maxSnippetLen ? l.slice(0, maxSnippetLen) : l);
+        }
+      }
+      const evLines: string[] = [];
+      for (let i = 0; i < snippetsPerRow.length; i++) {
+        const arr = snippetsPerRow[i];
+        if (arr.length) evLines.push(`${i+1}. EVIDENCE: ${arr.join(' | ')}`);
+      }
+      if (evLines.length) {
+        content.push({ type: 'text', text: `ROW EVIDENCE (short snippets; use as proof for the row status):\n${evLines.join('\n')}` });
+      }
     } catch {}
 
     // Add structured exclusions/inclusions/alternates as separate guidance block
