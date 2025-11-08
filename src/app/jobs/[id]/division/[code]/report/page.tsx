@@ -44,7 +44,14 @@ export default function DivisionReportPage() {
         .eq('job_id', id)
         .order('created_at', { ascending: false })
         .limit(1);
-      const raw = Array.isArray(pj) && pj[0] && (pj[0] as { meta?: any }).meta?.debug?.raw_response_preview;
+      let raw: string | undefined;
+      if (Array.isArray(pj) && pj[0]) {
+        const rec = pj[0] as { meta?: unknown };
+        if (rec.meta && typeof rec.meta === 'object') {
+          const dbg = (rec.meta as { debug?: { raw_response_preview?: string } }).debug;
+          if (dbg && typeof dbg.raw_response_preview === 'string') raw = dbg.raw_response_preview;
+        }
+      }
       if (typeof raw === 'string') setRawPreview(raw);
       setLoading(false);
     })();
