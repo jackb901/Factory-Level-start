@@ -204,6 +204,8 @@ export async function POST(req: NextRequest) {
     t = t.replace(/^\s*(the\s+)?(add|deduct)\s+alternate\s*(to|for)?\s*/i, '')
          .replace(/^\s*alternate\s*:?\s*/i, '')
          .replace(/^\s*at\s*/i, '');
+    // Remove leftover numbering/prefixes after phrase removal
+    t = t.replace(/^\s*(?:\d+\.|[ivxIVX]+\.|\([a-z0-9]+\))\s*/, '');
     // Drop trailing 'is' / 'is:'
     t = t.replace(/\bis\s*:?\s*$/i, '').trim();
     // Collapse whitespace
@@ -276,7 +278,7 @@ export async function POST(req: NextRequest) {
   // Additional boilerplate/business lines that should not become scope
   const isBoilerplateLine = (line: string) => {
     const l = normFilter(line);
-    return /(reserves\s+the\s+right|lock\s*in\s+pricing|make\s+every\s+effort|adequate\s+access|break\s+area|laydown\s+space|workmanship|free\s+from\s+defects|system\s+in\s+its\s+entirety\s+is\s+properly\s+serviced|file\s+in\s+cad\s+format|navis|upload\s+per\s+week|ftp\s+site|parking\s+and\s+material\s+staging|equipment\s+storage|equipment\s+rentals?\s+as\s+required|provide\s+construction\s+services|permit\s+plan\s*check|traffic\s+control|close\s*out\s+documentation|clean[- ]?up|general\s+conditions|equipment\s+and\s+scope\s+of\s+work)/i.test(l);
+    return /(reserves\s+the\s+right|lock\s*in\s+pricing|make\s+every\s+effort|adequate\s+access|break\s+area|laydown\s+space|workmanship|free\s+from\s+defects|system\s+in\s+its\s+entirety\s+is\s+properly\s+serviced|file\s+in\s+cad\s+format|navis|upload\s+per\s+week|ftp\s+site|parking\s+and\s+material\s+staging|equipment\s+storage|equipment\s+rentals?\s+as\s+required|provide\s+construction\s+services|permit\s+plan\s*check|traffic\s+control|close\s*out\s+documentation|clean[- ]?up|general\s+conditions|equipment\s+and\s+scope\s+of\s+work|period\s+of\s+one\s*\(\s*1\s*\)\s*year|warrant(?:y|ies)\s+will\s+be\s+as\s+stated)/i.test(l);
   };
   // Do NOT filter alternates from scope; keep them as rows so prices can appear in matrix
   const isAlternateLike = (_line: string) => false;
