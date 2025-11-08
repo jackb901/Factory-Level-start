@@ -210,8 +210,21 @@ export async function POST(req: NextRequest) {
     t = t.replace(/\bis\s*:?\s*$/i, '').trim();
     // Collapse whitespace
     t = t.replace(/\s+/g, ' ').trim();
-    if (!t) return null;
+    // Skip non-descriptive alternates like just 'Unit'
+    if (!t || /^unit\b/i.test(t)) return null;
     return `Alternate: ${capitalizeFirst(t)}`;
+  };
+
+  // Reduce overly long lines into generic, division-agnostic canonical forms
+  const reduceGeneric = (s: string): string | null => {
+    const l = s.toLowerCase().trim();
+    if (!l) return null;
+    // Filter boilerplate phrasing that sometimes slips through
+    if (/^equipment\s+and\s+scope\s+of\s+work\b/.test(l)) return null;
+    if (/^period\s+of\s+one\b/.test(l)) return null;
+    // Canonicalize common scope phrases across divisions
+    if (/^testing?\s*(?:&|and)\s*balanc/i.test(l)) return 'Test and balance';
+    return s;
   };
 
   // Detect and filter out non-scope junk - ULTRA CONSERVATIVE (only obvious header junk)
@@ -370,7 +383,10 @@ export async function POST(req: NextRequest) {
     for (const t of docs.texts) {
       extractCandidatesFromText(t.name, t.text).forEach(s => {
         // Strip prefixes BEFORE adding to set
-        const stripped = stripPrefix(s);
+        let stripped = stripPrefix(s);
+        const reduced = reduceGeneric(stripped);
+        if (reduced === null || reduced === '') return;
+        stripped = reduced;
         // Skip parent headers
         if (!isParentHeader(stripped)) {
           candidateUnionSet.add(stripped);
