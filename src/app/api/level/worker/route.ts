@@ -524,7 +524,7 @@ CRITICAL RULES:
     if (/fire\/?smoke|smoke\s*damper|fire\s*damper|fsd/i.test(l)) hints.push('fire damper','smoke damper','fire/smoke damper','fsd');
     if (/duct/i.test(l)) hints.push('duct','sheet metal','rectangular','spiral','smacna');
     if (/vrf|vrv/i.test(l)) hints.push('vrf','vrv','variable refrigerant');
-    if (/split\s*system/i.test(l)) hints.push('split system','dx split','condensing unit','fan coil');
+    if (/split\s*system/i.test(l)) hints.push('split system','mini split','dx split','condensing unit','fan coil');
     if (/temperature\s*control|controls?/i.test(l)) hints.push('controls','bms','ems','dcc');
     if (/seismic|bracing/i.test(l)) hints.push('seismic','bracing','anchorage');
     if (/refrigerant\s*pip/i.test(l)) hints.push('refrigerant piping','ref piping','line set');
@@ -533,6 +533,10 @@ CRITICAL RULES:
     if (/crane|rigging/i.test(l)) hints.push('crane','rigging','hoisting');
     if (/equipment\s*receiv|haul/i.test(l)) hints.push('receiving','hauling','delivery');
     if (/alternat/i.test(l)) hints.push('add alternate','deduct alternate','alternate');
+    if (/electric\s*wall\s*heater|wall\s*heater|unit\s*heater/i.test(l)) hints.push('unit heater','electric unit heater','wall heater','marley');
+    if (/central\s*controllers?.*bacnet|bacnet|interface/i.test(l)) hints.push('bacnet','bas','building automation','controls gateway','cc');
+    if (/gravity\s*relief\s*ventilator|grv/i.test(l)) hints.push('gravity relief','relief ventilator','grv','greenheck');
+    if (/exhaust\s*fans?/i.test(l)) hints.push('exhaust fan','inline fan','mushroom fan','whispergreen','greenheck');
     return hints;
   };
   const makeHints = (name: string): string[] => {
