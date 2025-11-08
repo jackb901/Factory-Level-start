@@ -544,8 +544,10 @@ CRITICAL RULES:
     const tset = new Set<string>();
     for (const t of tokens.slice(0,6)) basicVariants(t).forEach(v => tset.add(v));
     patternHints(name).forEach(v => tset.add(v));
+    // Add generic action words to help capture evidence phrasing
+    ['furnish','provide','install','supply','deliver'].forEach(v => tset.add(v));
     // limit to 6 hints to control token usage
-    return Array.from(tset).slice(0,6);
+    return Array.from(tset).slice(0,8);
   };
   const hintsPerRow: string[][] = candidateUnionFinal.map(makeHints);
 
@@ -671,6 +673,7 @@ NORMALIZATION RULES:
     // SIMPLIFIED APPROACH: Send raw text with minimal filtering (like Claude chat)
     // Collect lines for row-specific evidence
     const collectedLines: string[] = [];
+    const collectedAllLines: string[] = [];
     for (const c of docs.texts) {
       if (accChars > 200_000) break; // Allow more text
 
@@ -713,6 +716,22 @@ NORMALIZATION RULES:
         }
 
         kept.push(line);
+
+        // Row-evidence collection (broader):
+        // 1) Always add the raw line to collectedAllLines (with light normalization for CSV taking first column)
+        if (line.includes(',')) {
+          const first = (line.split(',')[0] || '').trim();
+          if (first) collectedAllLines.push(first);
+          else collectedAllLines.push(line);
+        } else {
+          collectedAllLines.push(line);
+        }
+        // 2) For scope-bearing sections, add even more aggressively
+        if (section && (section === 'scope' || section === 'inclusions' || section === 'equipment')) {
+          if (!isDocRefLine(line) && !isNarrativeLine(line) && !isBoilerplateLine(line)) {
+            collectedAllLines.push(line);
+          }
+        }
       }
 
       const fullText = kept.join('\n');
@@ -748,13 +767,21 @@ NORMALIZATION RULES:
           const esc = h.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
           return new RegExp(`\\b${esc}\\b`, 'i');
         });
-        for (const ln of collectedLines) {
-          if (snippetsPerRow[i].length >= maxPerRow) break;
-          const l = ln.trim(); if (!l) continue;
-          // skip obvious junk/doc refs
-          if (isDocRefLine(l) || isNarrativeLine(l) || isBoilerplateLine(l)) continue;
-          const hit = hintRes.some(r => r.test(l)) || hints.some(h => norm(l).includes(h.toLowerCase()));
-          if (hit) snippetsPerRow[i].push(l.length > maxSnippetLen ? l.slice(0, maxSnippetLen) : l);
+        // Prefer lines we kept; if insufficient, fall back to all lines
+        const pools = [collectedLines, collectedAllLines];
+        let added = 0;
+        for (const pool of pools) {
+          if (added >= maxPerRow) break;
+          for (const ln of pool) {
+            if (snippetsPerRow[i].length >= maxPerRow) break;
+            const l = ln.trim(); if (!l) continue;
+            if (isDocRefLine(l) || isNarrativeLine(l) || isBoilerplateLine(l)) continue;
+            const hit = hintRes.some(r => r.test(l)) || hints.some(h => norm(l).includes(h.toLowerCase()));
+            if (hit) {
+              snippetsPerRow[i].push(l.length > maxSnippetLen ? l.slice(0, maxSnippetLen) : l);
+              added++;
+            }
+          }
         }
       }
       const evLines: string[] = [];
