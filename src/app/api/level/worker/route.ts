@@ -258,11 +258,7 @@ export async function POST(req: NextRequest) {
   // Additional boilerplate/business lines that should not become scope
   const isBoilerplateLine = (line: string) => {
     const l = normFilter(line);
-    return /(
-      reserves\s+the\s+right|lock\s*in\s+pricing|make\s+every\s+effort|adequate\s+access|break\s+area|laydown\s+space|
-      workmanship|free\s+from\s+defects|period\s+of\s+one|upload\s+per\s+week|ftp\s+site|parking\s+and\s+material\s+staging|equipment\s+storage|
-      provide\s+construction\s+services|permit\s+plan\s*check|traffic\s+control|closeout\s+documentation|clean[- ]?up|general\s+conditions
-    )/ix.test(l);
+    return /(reserves\s+the\s+right|lock\s*in\s+pricing|make\s+every\s+effort|adequate\s+access|break\s+area|laydown\s+space|workmanship|free\s+from\s+defects|period\s+of\s+one|upload\s+per\s+week|ftp\s+site|parking\s+and\s+material\s+staging|equipment\s+storage|provide\s+construction\s+services|permit\s+plan\s*check|traffic\s+control|closeout\s+documentation|clean[- ]?up|general\s+conditions)/i.test(l);
   };
   // Do NOT filter alternates from scope; keep them as rows so prices can appear in matrix
   const isAlternateLike = (_line: string) => false;
