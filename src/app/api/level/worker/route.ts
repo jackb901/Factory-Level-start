@@ -159,15 +159,28 @@ export async function POST(req: NextRequest) {
     return Number.isFinite(n) ? n : null;
   };
   const findTotalInText = (text: string): number | null => {
-    // Capture common phrasings across divisions: Base Bid, Base Price, Total, Bid Amount, Proposal Total
-    const re = /(base\s*(?:bid|price)|total(?:\s*(?:price|amount))?|bid\s*amount|proposal\s*(?:total|amount))\s*[:\-]?\s*\$?\s*([0-9][\d,]*(?:\.\d{2})?)/gi;
+    // Primary: common phrasings across divisions
+    const re = /(total\s*(?:base\s*)?(?:bid|price|amount)|base\s*(?:bid|price)\s*(?:total)?|bid\s*(?:amount|price)|proposal\s*(?:total|amount|price)|contract\s*amount)\s*[:\-]?\s*\$?\s*([0-9][\d,]*(?:\.\d{2})?)/gi;
     let best: number | null = null;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
       const val = parseMoney(m[2] || '');
       if (val != null) best = val; // keep last seen
     }
-    return best;
+    if (best != null) return best;
+    // Fallback: look for a line containing a keyword and capture the nearest $ amount within 100 chars
+    const kw = /(base\s*bid|base\s*price|total\s*bid|total\s*price|bid\s*amount|proposal\s*(?:total|amount|price))/i;
+    const lines = text.split(/\r?\n/);
+    for (const ln of lines) {
+      if (kw.test(ln)) {
+        const m2 = ln.match(/\$\s*([0-9][\d,]*(?:\.\d{2})?)/);
+        if (m2) {
+          const val = parseMoney(m2[1] || '');
+          if (val != null) return val;
+        }
+      }
+    }
+    return null;
   };
 
   // Utility: identify totals-like strings that should never become scope items
@@ -555,9 +568,10 @@ OUTPUT FORMAT (JSON only):
 }
 
 REQUIREMENTS (division-agnostic):
-- candidate_index is 1-based and REQUIRED for every entry in items. Only include rows you can positively label as included or excluded; you may omit not_specified rows to keep output concise.
+- There are exactly ${candidateUnionFinal.length} rows in CANDIDATE_SCOPE. Output ONE item per row, in order, with candidate_index = 1..${candidateUnionFinal.length} and the status for that row. If you cannot find any mention, use not_specified.
+- You may set price when a clear dollar amount is tied to that exact row; otherwise null.
 - Evidence must be a small, verbatim fragment.
-- Price: set only when a clear dollar amount is tied to that exact scope row (SOV row or alternate). Otherwise null.
+` };
 
 STATUS RULES:
 1) included = clear mention of furnishing/providing/installing or present in scope/equipment/SOV.
@@ -888,9 +902,15 @@ NORMALIZATION RULES:
       }
       items = kept;
     }
-    // Collapse duplicates per candidate row with precedence: included > excluded > not_specified
+    // Fill in any missing rows with not_specified, then collapse duplicates with precedence: included > excluded > not_specified
     const precedence: Record<string, number> = { included: 3, excluded: 2, not_specified: 1 } as const;
     const collapsedMap = new Map<string, PerItem>();
+    // pre-fill all rows as not_specified
+    for (let i = 0; i < candidateUnionFinal.length; i++) {
+      const name = candidateUnionFinal[i];
+      const key = normalizeScope(name);
+      collapsedMap.set(key, { name, status: 'not_specified', price: null });
+    }
     for (const it of kept) {
       const key = normalizeScope(it.name);
       const prev = key ? collapsedMap.get(key) : undefined;
@@ -903,7 +923,7 @@ NORMALIZATION RULES:
       }
     }
     // Use only kept items mapped to candidate scope
-    items = collapsedMap.size ? Array.from(collapsedMap.values()) : [];
+    items = Array.from(collapsedMap.values());
     try {
       const toLog: Array<{ name?: string }> = Array.isArray(parsed.items) ? (parsed.items as Array<{ name?: string }>) : [];
       const sampleNames = toLog.slice(0,5).map(it => it?.name || '').filter(Boolean);
@@ -975,6 +995,12 @@ NORMALIZATION RULES:
         // After retry, collapse duplicates per candidate row
         const precedence2: Record<string, number> = { included: 3, excluded: 2, not_specified: 1 } as const;
         const collapsedMap2 = new Map<string, PerItem>();
+        // pre-fill all rows
+        for (let i = 0; i < candidateUnionFinal.length; i++) {
+          const name = candidateUnionFinal[i];
+          const key = normalizeScope(name);
+          collapsedMap2.set(key, { name, status: 'not_specified', price: null });
+        }
         for (const it2 of kept2) {
           const key2 = normalizeScope(it2.name);
           const prev2 = key2 ? collapsedMap2.get(key2) : undefined;
@@ -982,7 +1008,7 @@ NORMALIZATION RULES:
           if (!prev2 || precedence2[it2.status] > precedence2[prev2.status]) collapsedMap2.set(key2, it2);
           else if (prev2 && prev2.price == null && typeof it2.price === 'number') prev2.price = it2.price;
         }
-        items = collapsedMap2.size ? Array.from(collapsedMap2.values()) : [];
+        items = Array.from(collapsedMap2.values());
         try {
           const toLog2: Array<{ name?: string }> = Array.isArray(parsed.items) ? (parsed.items as Array<{ name?: string }>) : [];
           const sampleNames2 = toLog2.slice(0,5).map(it => it?.name || '').filter(Boolean);
