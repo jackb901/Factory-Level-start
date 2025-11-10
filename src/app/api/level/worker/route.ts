@@ -1067,7 +1067,7 @@ NORMALIZATION RULES:
       }
     }
     // Build final items array from collapsed map
-    let finalItems: PerItem[] = Array.from(collapsedMap.values());
+    const finalItems: PerItem[] = Array.from(collapsedMap.values());
     try {
       const toLog: Array<{ name?: string }> = Array.isArray(parsed.items) ? (parsed.items as Array<{ name?: string }>) : [];
       const sampleNames = toLog.slice(0,5).map(it => it?.name || '').filter(Boolean);
