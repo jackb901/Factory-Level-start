@@ -794,6 +794,27 @@ NORMALIZATION RULES:
       }
     } catch {}
 
+    // Post-process alternates: merge short code-only titles with next descriptive line (no $)
+    if (explicitAlternates.length > 0) {
+      const merged: string[] = [];
+      for (let i = 0; i < explicitAlternates.length; i++) {
+        const cur = (explicitAlternates[i] || '').trim();
+        const nxt = (explicitAlternates[i+1] || '').trim();
+        const curHasAmt = /\$\s*\d/.test(cur);
+        const nxtHasAmt = /\$\s*\d/.test(nxt);
+        const looksCode = /^\s*(?:fc|alt|a)\s*[\w\-]+/i.test(cur);
+        const tooGeneric = /^alternate\b[:\s]*$/i.test(cur) || /^unit\s*is\b/i.test(cur) || cur.length < 12 || looksCode;
+        if (!curHasAmt && tooGeneric && nxt && !nxtHasAmt && !/^alternate\b/i.test(nxt)) {
+          merged.push(`${cur} — ${nxt}`);
+          i++; // consume next
+        } else {
+          merged.push(cur);
+        }
+      }
+      explicitAlternates.length = 0;
+      explicitAlternates.push(...merged.slice(0, 200));
+    }
+
     // Add structured exclusions/inclusions/alternates as separate guidance block
     if (explicitExclusions.length > 0 || explicitInclusions.length > 0) {
       let structuredBlock = '\n=== STRUCTURED QUALIFICATIONS ===\n';
@@ -1046,7 +1067,7 @@ NORMALIZATION RULES:
       }
     }
     // Build final items array from collapsed map
-    const finalItems: PerItem[] = Array.from(collapsedMap.values());
+    let finalItems: PerItem[] = Array.from(collapsedMap.values());
     try {
       const toLog: Array<{ name?: string }> = Array.isArray(parsed.items) ? (parsed.items as Array<{ name?: string }>) : [];
       const sampleNames = toLog.slice(0,5).map(it => it?.name || '').filter(Boolean);
@@ -1061,6 +1082,7 @@ NORMALIZATION RULES:
     } catch {}
 
     // If model returned zero items, retry once with fully lenient evidence (raw cleaned text blocks)
+    let resultItems: PerItem[] = finalItems;
     if (kept.length === 0 && finalItems.length === 0) {
       try { console.log('[level/worker] retry_lenient', true); } catch {}
       const content2: ContentBlockParam[] = [];
@@ -1141,6 +1163,9 @@ NORMALIZATION RULES:
           const sampleNames2 = toLog2.slice(0,5).map(it => it?.name || '').filter(Boolean);
           console.log('[level/worker] parsed_items_retry', toLog2.length, 'kept', kept2.length, 'sample', sampleNames2);
         } catch {}
+        if (kept2.length || finalItems2.length) {
+          resultItems = finalItems2;
+        }
       } catch {}
     }
     // Merge explicit alternates into qualifications in a non-duplicating, division-agnostic way
@@ -1152,8 +1177,7 @@ NORMALIZATION RULES:
       return out;
     };
     const cidKey = b.contractor_id || 'unassigned';
-    const chosenItems = (kept.length || finalItems.length) ? (kept.length ? finalItems : finalItems) : [];
-    per[cidKey] = { items: chosenItems, qualifications: mergeQual(parsed.qualifications), unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
+    per[cidKey] = { items: resultItems, qualifications: mergeQual(parsed.qualifications), unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
     unmappedPer[cidKey] = [...(parsed.unmapped || []), ...dropped];
     done += 1;
     await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(90, Math.round((done / batches.length) * 85) + 5) }).eq('id', job.id);
