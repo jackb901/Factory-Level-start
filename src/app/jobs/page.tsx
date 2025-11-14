@@ -53,6 +53,14 @@ export default function JobsPage() {
     setJobs((prev) => (data ? [...data, ...prev] : prev));
   };
 
+  const deleteJob = async (id: string) => {
+    setError(null);
+    if (!confirm('Delete this job and its data? This cannot be undone.')) return;
+    const { error } = await supabase.from('jobs').delete().eq('id', id);
+    if (error) { setError(error.message); return; }
+    setJobs(prev => prev.filter(j => j.id !== id));
+  };
+
   if (loading) return <p className="p-6">Loading…</p>;
 
   return (
@@ -75,8 +83,9 @@ export default function JobsPage() {
           <li key={j.id} className="border p-3 rounded">
             <div className="font-medium">{j.name}</div>
             <div className="text-xs text-gray-500">{new Date(j.created_at).toLocaleString()}</div>
-            <div className="mt-2">
+            <div className="mt-2 flex gap-4">
               <Link className="underline" href={`/jobs/${j.id}`}>Open</Link>
+              <button className="text-red-600 underline" onClick={() => deleteJob(j.id)}>Delete</button>
             </div>
           </li>
         ))}

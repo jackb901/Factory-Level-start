@@ -144,15 +144,29 @@ export default function DivisionReportPage() {
       <section className="space-y-2">
         <h2 className="text-lg font-medium">Qualifications</h2>
         <ul className="list-disc pl-5 text-sm">
-          {contractors.map(c => (
-            <li key={c.contractor_id || 'unassigned'}>
-              <span className="font-medium">{c.name}:</span>
-              <span className="ml-2">Includes: {(quals?.[c.contractor_id || 'unassigned']?.includes || []).length}</span>
-              <span className="ml-2">Excludes: {(quals?.[c.contractor_id || 'unassigned']?.excludes || []).length}</span>
-              <span className="ml-2">Allowances: {(quals?.[c.contractor_id || 'unassigned']?.allowances || []).length}</span>
-              <span className="ml-2">Alternates: {(quals?.[c.contractor_id || 'unassigned']?.alternates || []).length}</span>
-            </li>
-          ))}
+          {contractors.map(c => {
+            const cid = c.contractor_id || 'unassigned';
+            // Derive counts from the matrix for consistency across contractors
+            let inc = 0, exc = 0, alts = 0;
+            for (const s of scopeItems) {
+              const row = (matrix as Record<string, Record<string, { status?: string }>>)[s];
+              const status = row?.[cid]?.status || 'not_specified';
+              const isAlt = /^alternate:/i.test(s);
+              if (isAlt) { if (status !== 'not_specified') alts++; continue; }
+              if (status === 'included') inc++;
+              else if (status === 'excluded') exc++;
+            }
+            const allowances = (quals?.[cid]?.allowances || []).length;
+            return (
+              <li key={cid}>
+                <span className="font-medium">{c.name}:</span>
+                <span className="ml-2">Includes: {inc}</span>
+                <span className="ml-2">Excludes: {exc}</span>
+                <span className="ml-2">Allowances: {allowances}</span>
+                <span className="ml-2">Alternates: {alts}</span>
+              </li>
+            );
+          })}
         </ul>
       </section>
 
