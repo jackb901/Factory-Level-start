@@ -85,10 +85,10 @@ export default function JobsPage() {
           <li key={j.id} className="relative border rounded bg-white text-black">
             <button
               aria-label="Job menu"
-              className="absolute right-2 top-2 px-2 py-1 text-lg leading-none"
+              className="absolute right-2 top-2 px-2 py-1 text-lg leading-none text-black hover:bg-black/5 rounded"
               onClick={() => setMenuOpenId(prev => prev === j.id ? null : j.id)}
             >
-              ⋮
+              ...
             </button>
             {menuOpenId === j.id && (
               <div className="absolute right-2 top-8 z-10 w-32 rounded border bg-white shadow">
