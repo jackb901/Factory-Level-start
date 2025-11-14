@@ -12,6 +12,7 @@ export default function JobsPage() {
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -59,6 +60,7 @@ export default function JobsPage() {
     const { error } = await supabase.from('jobs').delete().eq('id', id);
     if (error) { setError(error.message); return; }
     setJobs(prev => prev.filter(j => j.id !== id));
+    setMenuOpenId(null);
   };
 
   if (loading) return <p className="p-6">Loading…</p>;
@@ -78,14 +80,32 @@ export default function JobsPage() {
         </button>
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
-      <ul className="space-y-2">
+      <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {jobs.map((j) => (
-          <li key={j.id} className="border p-3 rounded">
-            <div className="font-medium">{j.name}</div>
-            <div className="text-xs text-gray-500">{new Date(j.created_at).toLocaleString()}</div>
-            <div className="mt-2 flex gap-4">
-              <Link className="underline" href={`/jobs/${j.id}`}>Open</Link>
-              <button className="text-red-600 underline" onClick={() => deleteJob(j.id)}>Delete</button>
+          <li key={j.id} className="relative border rounded bg-white text-black">
+            <button
+              aria-label="Job menu"
+              className="absolute right-2 top-2 px-2 py-1 text-lg leading-none"
+              onClick={() => setMenuOpenId(prev => prev === j.id ? null : j.id)}
+            >
+              ⋮
+            </button>
+            {menuOpenId === j.id && (
+              <div className="absolute right-2 top-8 z-10 w-32 rounded border bg-white shadow">
+                <button
+                  className="w-full text-left px-3 py-2 hover:bg-red-50 text-red-600"
+                  onClick={() => deleteJob(j.id)}
+                >
+                  Delete
+                </button>
+              </div>
+            )}
+            <div className="p-4">
+              <div className="font-medium">{j.name}</div>
+              <div className="text-xs text-gray-500">{new Date(j.created_at).toLocaleString()}</div>
+              <div className="mt-2">
+                <Link className="underline" href={`/jobs/${j.id}`} onClick={() => setMenuOpenId(null)}>Open</Link>
+              </div>
             </div>
           </li>
         ))}
