@@ -497,7 +497,7 @@ CRITICAL RULES:
     }
     return out;
   };
-  const candidateUnionFinal = finalizeCandidates(prioritized);
+  let candidateUnionFinal = finalizeCandidates(prioritized);
 
   // Log noise metrics
   try {
@@ -549,7 +549,41 @@ CRITICAL RULES:
     // limit to 6 hints to control token usage
     return Array.from(tset).slice(0,8);
   };
-  const hintsPerRow: string[][] = candidateUnionFinal.map(makeHints);
+  let hintsPerRow: string[][] = candidateUnionFinal.map(makeHints);
+
+  // Aggregator guard: keep only candidate rows that have at least one evidence hit across all bids
+  try {
+    const globalLines: string[] = [];
+    for (const b of bidList) {
+      const docsAll = byBidDocs[b.id] || { texts: [] };
+      for (const t of docsAll.texts) {
+        const ls = String(t.text || '').split(/\r?\n/);
+        for (const ln of ls) {
+          const raw = ln.trim();
+          if (!raw) continue;
+          globalLines.push(raw);
+          if (ln.includes(',')) {
+            const first = (ln.split(',')[0] || '').trim();
+            if (first) globalLines.push(first);
+          }
+        }
+      }
+    }
+    const keep: boolean[] = [];
+    const lowerLines = globalLines.map(s => s.toLowerCase());
+    for (let i = 0; i < candidateUnionFinal.length; i++) {
+      const name = candidateUnionFinal[i].toLowerCase();
+      const hints = hintsPerRow[i] || [];
+      const hit = lowerLines.some(L => hints.some(h => L.includes(h.toLowerCase())) || L.includes(name));
+      keep.push(hit);
+    }
+    if (keep.some(k => !k)) {
+      const before = candidateUnionFinal.length;
+      candidateUnionFinal = candidateUnionFinal.filter((_, i) => keep[i]);
+      hintsPerRow = hintsPerRow.filter((_, i) => keep[i]);
+      try { console.log('[Pass1] pruned_unsubstantiated', before - candidateUnionFinal.length); } catch {}
+    }
+  } catch {}
 
   const batches: typeof bidList[] = [];
   for (let i = 0; i < bidList.length; i += LIMITS.batchSize) batches.push(bidList.slice(i, i + LIMITS.batchSize));
@@ -1267,6 +1301,10 @@ NORMALIZATION RULES:
       matrix[s][cid] = { status: (found?.status || 'not_specified'), price: typeof found?.price === 'number' ? found?.price : null };
     }
   }
+  // Post-processing prune: drop rows where all contractors are not_specified
+  const prunedScopeItems = scopeItems.filter(s => Object.values(matrix[s] || {}).some((v: { status: string }) => v.status !== 'not_specified'));
+  const prunedMatrix: NonNullable<Report['matrix']> = {};
+  for (const s of prunedScopeItems) prunedMatrix[s] = matrix[s];
   const quals: NonNullable<Report['qualifications']> = {};
   for (const b of bidList) {
     const cid = b.contractor_id || 'unassigned';
@@ -1297,8 +1335,8 @@ NORMALIZATION RULES:
     division_code: division || null,
     subdivision_id: subdivisionId || null,
     contractors: contractorsWithTotals,
-    scope_items: scopeItems,
-    matrix,
+    scope_items: prunedScopeItems,
+    matrix: prunedMatrix,
     qualifications: quals,
     unmapped: unmappedPer,
   };
