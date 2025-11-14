@@ -21,6 +21,7 @@ export default function DivisionReportPage() {
   const [hidden, setHidden] = useState<Record<string, boolean>>({});
   const [rawPreview, setRawPreview] = useState<string>("");
   const [showRaw, setShowRaw] = useState(false);
+  const [demoMode, setDemoMode] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -77,7 +78,7 @@ export default function DivisionReportPage() {
   return (
     <main className="min-h-dvh p-6 space-y-4 bg-[#0a2540] text-white">
       <h1 className="text-2xl font-semibold">Division {code} — Bid Level Report</h1>
-      {rawPreview && (
+      {!demoMode && rawPreview && (
         <div className="rounded border border-white/20 p-3 bg-white/5">
           <button className="border rounded px-2 py-0.5 text-xs" onClick={() => setShowRaw(v => !v)}>
             {showRaw ? 'Hide raw Claude output' : 'Show raw Claude output'}
@@ -89,6 +90,13 @@ export default function DivisionReportPage() {
           )}
         </div>
       )}
+      <div className="flex items-center gap-3 text-sm">
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={demoMode} onChange={e => setDemoMode(e.target.checked)} />
+          <span>Demo mode</span>
+        </label>
+        {demoMode && <span className="text-white/60">Hides raw output and renders not_specified as '-'</span>}
+      </div>
       <div className="overflow-auto">
         <table className="min-w-full text-sm">
           <thead>
@@ -123,7 +131,8 @@ export default function DivisionReportPage() {
                     const status = cell?.status || 'not_specified';
                     const price = cell?.price;
                     const color = status === 'included' ? 'bg-green-900/30 text-green-300' : status === 'excluded' ? 'bg-red-900/30 text-red-300' : 'text-gray-300';
-                    return <td key={cid} className={`p-2 ${color}`}>{status}{price!=null?` — $${Number(price).toLocaleString()}`:''}</td>;
+                    const label = demoMode && status === 'not_specified' ? '-' : status;
+                    return <td key={cid} className={`p-2 ${color}`}>{label}{price!=null?` — $${Number(price).toLocaleString()}`:''}</td>;
                   })}
                 </tr>
               )
