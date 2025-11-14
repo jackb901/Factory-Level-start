@@ -1042,7 +1042,7 @@ NORMALIZATION RULES:
         const parsedAlt = parseAlt(a);
         if (!parsedAlt) continue;
         const exists = kept.some(k => normalizeScope(k.name) === normalizeScope(parsedAlt.name));
-        if (!exists) kept.push({ name: parsedAlt.name, status: 'not_specified', price: parsedAlt.price });
+        if (!exists) kept.push({ name: parsedAlt.name, status: 'included', price: parsedAlt.price });
       }
       // Note: we do not overwrite the normalized items collection here; 'kept' will be merged below
     }
@@ -1195,9 +1195,9 @@ NORMALIZATION RULES:
           }
         }
         const incPools = allLines.filter(l => /(furnish|provide|install|supply|deliver|including|includes|include)/i.test(l));
-        const excPoolsBase = allLines.filter(l => /(exclude|excluded|not\s*included|by\s+others)/i.test(l));
+        const excPoolsBase = allLines.filter(l => /(\bexclude\b|\bexcluded\b|not\s*included|by\s+others|others\s+to\s+provide|\bNIC\b|\bN\.I\.C\.|not\s+in\s+contract)/i.test(l));
         const excPools = excPoolsBase.concat(explicitExclusions);
-        const actionWords = ['furnish','provide','install','supply','deliver','including','includes','include'];
+        const actionWords = ['furnish','provide','install','supply','deliver','including','includes','include'] as const;
         const matchesAny = (line: string, terms: readonly string[]): boolean => {
           const L = line.toLowerCase();
           for (const term of terms) { if (term && L.includes(term.toLowerCase())) return true; }
@@ -1210,17 +1210,21 @@ NORMALIZATION RULES:
           const rowName = candidateUnionFinal[i];
           const key = normalizeScope(rowName);
           const hints = (hintsPerRow[i] || []) as string[];
+          const strongHints = patternHints(rowName); // less generic for exclusion
           const it = byKey.get(key) || { name: rowName, status: 'not_specified' as const, price: null };
           if (it.status !== 'not_specified') continue;
-          // Exclusion check first
-          const exclHit = excPools.some(l => matchesAny(l, hints));
-          if (exclHit) {
-            it.status = 'excluded';
-            byKey.set(key, it); changed++; continue;
-          }
-          // Inclusion if hints + action words present in same line pool (approximate by checking both independently here)
-          const inclHit = incPools.some(l => matchesAny(l, hints) || matchesAny(l, actionWords));
+          // Determine inclusion/exclusion with stricter rules
+          const inclHit = incPools.some(l => {
+            const L = l.toLowerCase();
+            return hints.some(h => L.includes(h.toLowerCase())) && matchesAny(l, actionWords);
+          });
+          const exclHit = excPools.some(l => {
+            const L = l.toLowerCase();
+            return strongHints.some(h => L.includes(h.toLowerCase()));
+          });
+          // Precedence: included > excluded > not_specified
           if (inclHit) { it.status = 'included'; byKey.set(key, it); changed++; }
+          else if (exclHit) { it.status = 'excluded'; byKey.set(key, it); changed++; }
         }
         if (changed > 0) {
           // Rebuild resultItems in candidate order to keep UI stable
