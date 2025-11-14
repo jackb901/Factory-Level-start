@@ -95,7 +95,7 @@ export default function DivisionReportPage() {
           <input type="checkbox" checked={demoMode} onChange={e => setDemoMode(e.target.checked)} />
           <span>Demo mode</span>
         </label>
-        {demoMode && <span className="text-white/60">Hides raw output and renders not_specified as '-'</span>}
+        {demoMode && <span className="text-white/60">Hides raw output and renders not_specified as &#39;-&#39;</span>}
       </div>
       <div className="overflow-auto">
         <table className="min-w-full text-sm">
