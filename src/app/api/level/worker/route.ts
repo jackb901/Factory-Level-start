@@ -1176,6 +1176,66 @@ NORMALIZATION RULES:
       if (alts.size) out.alternates = Array.from(alts).slice(0, 100);
       return out;
     };
+    // Heuristic fallback mapping: if too few rows are included by the model, infer statuses via hints from raw text
+    try {
+      const minIncluded = Math.max(1, Math.floor(candidateUnionFinal.length * 0.15));
+      const includedCount = resultItems.filter(it => it.status === 'included').length;
+      if (includedCount < minIncluded) {
+        const allLines: string[] = [];
+        for (const c of docs.texts) {
+          const ls = c.text.split(/\r?\n/);
+          for (const ln of ls) {
+            const t = ln.trim();
+            if (!t) continue;
+            allLines.push(t);
+            if (ln.includes(',')) {
+              const first = (ln.split(',')[0] || '').trim();
+              if (first && first !== t) allLines.push(first);
+            }
+          }
+        }
+        const incPools = allLines.filter(l => /(furnish|provide|install|supply|deliver|including|includes|include)/i.test(l));
+        const excPoolsBase = allLines.filter(l => /(exclude|excluded|not\s*included|by\s+others)/i.test(l));
+        const excPools = excPoolsBase.concat(explicitExclusions);
+        const actionWords = ['furnish','provide','install','supply','deliver','including','includes','include'];
+        const matchesAny = (line: string, terms: readonly string[]): boolean => {
+          const L = line.toLowerCase();
+          for (const term of terms) { if (term && L.includes(term.toLowerCase())) return true; }
+          return false;
+        };
+        const byKey = new Map<string, PerItem>();
+        for (const it of resultItems) byKey.set(normalizeScope(it.name), it);
+        let changed = 0;
+        for (let i = 0; i < candidateUnionFinal.length; i++) {
+          const rowName = candidateUnionFinal[i];
+          const key = normalizeScope(rowName);
+          const hints = (hintsPerRow[i] || []) as string[];
+          const it = byKey.get(key) || { name: rowName, status: 'not_specified' as const, price: null };
+          if (it.status !== 'not_specified') continue;
+          // Exclusion check first
+          const exclHit = excPools.some(l => matchesAny(l, hints));
+          if (exclHit) {
+            it.status = 'excluded';
+            byKey.set(key, it); changed++; continue;
+          }
+          // Inclusion if hints + action words present in same line pool (approximate by checking both independently here)
+          const inclHit = incPools.some(l => matchesAny(l, hints) || matchesAny(l, actionWords));
+          if (inclHit) { it.status = 'included'; byKey.set(key, it); changed++; }
+        }
+        if (changed > 0) {
+          // Rebuild resultItems in candidate order to keep UI stable
+          const rebuilt: PerItem[] = [];
+          for (const name of candidateUnionFinal) {
+            const k = normalizeScope(name);
+            const v = byKey.get(k) || { name, status: 'not_specified' as const, price: null };
+            rebuilt.push(v);
+          }
+          resultItems = rebuilt;
+          try { console.log('[fallback] applied', changed, 'rows'); } catch {}
+        }
+      }
+    } catch {}
+
     const cidKey = b.contractor_id || 'unassigned';
     per[cidKey] = { items: resultItems, qualifications: mergeQual(parsed.qualifications), unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
     unmappedPer[cidKey] = [...(parsed.unmapped || []), ...dropped];
