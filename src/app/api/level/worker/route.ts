@@ -56,7 +56,8 @@ export async function POST(req: NextRequest) {
     await supabase.from('processing_jobs').update({ status: 'failed', error: bidsErr.message, finished_at: new Date().toISOString() }).eq('id', job.id);
     return NextResponse.json({ error: bidsErr.message }, { status: 500 });
   }
-  const bidList = (bids || []).slice(0, LIMITS.maxContractors);
+  type BidRow = { id: string; user_id: string | null; contractor_id: string | null; job_id: string; division_code: string | null; subdivision_id: string | null };
+  const bidList: BidRow[] = ((bids || []) as BidRow[]).slice(0, LIMITS.maxContractors);
   if (!bidList.length) {
     await supabase.from('processing_jobs').update({ status: 'failed', error: 'No bids found', finished_at: new Date().toISOString() }).eq('id', job.id);
     return NextResponse.json({ error: 'No bids' }, { status: 400 });
@@ -120,6 +121,7 @@ export async function POST(req: NextRequest) {
               }
             }
           } catch (cacheErr) {
+            try { console.warn('[extract-cache] error, falling back to direct extraction', cacheErr); } catch {}
             // Fallback: call extractor without caching on error
             extracted = await extractWithPython(ab, d.storage_path);
           }
@@ -620,7 +622,7 @@ CRITICAL RULES:
     }
   } catch {}
 
-  const batches: typeof bidList[] = [];
+  const batches: BidRow[][] = [];
   for (let i = 0; i < bidList.length; i += LIMITS.batchSize) batches.push(bidList.slice(i, i + LIMITS.batchSize));
   await supabase.from('processing_jobs').update({ batches_total: batches.length }).eq('id', job.id);
 
@@ -660,7 +662,7 @@ CRITICAL RULES:
   };
   let done = 0;
 
-  const processBatch = async (batch: typeof bidList[]) => {
+  const processBatch = async (batch: BidRow[]) => {
     // batchSize=1 → single contractor per loop
     const b = batch[0];
     let content: ContentBlockParam[] = [];
