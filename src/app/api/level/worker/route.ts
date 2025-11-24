@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { ContentBlockParam, TextBlockParam } from "@anthropic-ai/sdk/resources/messages/messages";
-import { extractWithPython, type ExtractResult } from "@/lib/extractorClient";
+import { extractWithPython, sha256, type ExtractResult } from "@/lib/extractorClient";
 import { DIV23_SCOPE, buildSynonymIndex, canonize } from "@/lib/scope/d23";
 
 export const dynamic = "force-dynamic";
@@ -73,6 +73,10 @@ export async function POST(req: NextRequest) {
   const canonicalContractors = Array.from(new Set(bidList.map(b => b.contractor_id || 'unassigned')))
     .map(cid => ({ contractor_id: cid === 'unassigned' ? null : cid, name: contractorsMap[cid] || 'Contractor' }));
 
+  // Resolve current user once; used for extraction cache and report insert
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id || null;
+
   const byBidDocs: Record<string, { texts: { name: string; text: string }[] }> = {};
   for (const b of bidList) {
     const { data: docs, error: docsErr } = await supabase.from('documents').select('storage_path').eq('bid_id', b.id);
@@ -88,8 +92,39 @@ export async function POST(req: NextRequest) {
       if (lower.endsWith('.pdf')) {
         try {
           const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-          const extracted: ExtractResult = await extractWithPython(ab, d.storage_path);
-          for (const p of extracted.pages) {
+          // Extraction cache: reuse results by PDF hash for this user
+          let extracted: ExtractResult | null = null;
+          try {
+            const hash = await sha256(ab);
+            if (userId) {
+              const { data: cache } = await supabase
+                .from('document_extractions')
+                .select('result')
+                .eq('sha256', hash)
+                .limit(1);
+              if (Array.isArray(cache) && cache[0] && (cache[0] as { result: unknown }).result) {
+                extracted = (cache[0] as { result: ExtractResult }).result;
+              }
+            }
+            if (!extracted) {
+              extracted = await extractWithPython(ab, d.storage_path);
+              if (userId) {
+                await supabase.from('document_extractions').upsert({
+                  user_id: userId,
+                  job_id: b.job_id,
+                  bid_id: b.id,
+                  storage_path: d.storage_path,
+                  sha256: await sha256(ab),
+                  result: extracted,
+                }, { onConflict: 'sha256' });
+              }
+            }
+          } catch (cacheErr) {
+            // Fallback: call extractor without caching on error
+            extracted = await extractWithPython(ab, d.storage_path);
+          }
+          const extractedTyped = extracted as ExtractResult;
+          for (const p of extractedTyped.pages) {
             if (p.tables && p.tables.length) {
               p.tables.forEach((tbl, ti) => {
                 const csv = tbl.map(row => row.map(c => (c ?? '').replace(/\n/g,' ')).join(',')).join('\n');
@@ -1279,10 +1314,6 @@ NORMALIZATION RULES:
     unmappedPer[cidKey] = [...(parsed.unmapped || []), ...dropped];
     done += 1;
     await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(90, Math.round((done / batches.length) * 85) + 5) }).eq('id', job.id);
-    // dynamic inter-batch delay based on input size to respect 40k tokens/min
-    const usedTokens = (content as ContentBlockParam[]).reduce((acc, cb) => acc + (cb.type === 'text' ? ((cb as TextBlockParam).text?.length || 0) : 0), 0) / 4;
-    const minDelayMs = Math.ceil((usedTokens / 40_000) * 60_000); // scale to minute window
-    await new Promise(r => setTimeout(r, Math.max(1500, Math.min(20_000, minDelayMs))));
   }
 
   // Merge pass → final division-level report
@@ -1341,8 +1372,6 @@ NORMALIZATION RULES:
     unmapped: unmappedPer,
   };
 
-  const { data: user } = await supabase.auth.getUser();
-  const userId = user.user?.id;
   await supabase.from('bid_level_reports').insert({ user_id: userId, job_id: job.job_id, division_code: division || null, subdivision_id: subdivisionId || null, report: mergedReport });
   await supabase.from('processing_jobs').update({ status: 'success', progress: 100, finished_at: new Date().toISOString() }).eq('id', job.id);
   return NextResponse.json({ ok: true, processed: job.id });
