@@ -45,6 +45,23 @@ export async function POST(req: NextRequest) {
   const division: string | null = typeof meta["division"] === 'string' ? (meta["division"] as string) : null;
   const subdivisionId: string | null = typeof meta["subdivisionId"] === 'string' ? (meta["subdivisionId"] as string) : null;
 
+  // If a report already exists for this job/division/subdivision, reuse it instead of
+  // recomputing. This gives deterministic results for repeated runs on the same job.
+  try {
+    const { data: existing } = await supabase
+      .from('bid_level_reports')
+      .select('id')
+      .eq('job_id', job.job_id)
+      .eq('division_code', division || null)
+      .eq('subdivision_id', subdivisionId)
+      .limit(1);
+    if (existing && Array.isArray(existing) && existing.length > 0) {
+      await supabase.from('processing_jobs').update({ status: 'success', progress: 100, finished_at: new Date().toISOString(), meta }).eq('id', job.id);
+      try { console.log('[worker] reused_existing_report', job.job_id, division, subdivisionId); } catch {}
+      return NextResponse.json({ ok: true, reused: true, processed: job.id });
+    }
+  } catch {}
+
   let bidsQuery = supabase
     .from('bids')
     .select('id, user_id, contractor_id, job_id, division_code, subdivision_id')
@@ -194,6 +211,12 @@ export async function POST(req: NextRequest) {
     if (!m) return null;
     const n = Number(m[1]);
     return Number.isFinite(n) ? n : null;
+  };
+  const findPriceInEvidence = (text: string): number | null => {
+    if (!text) return null;
+    const m = text.match(/\$\s*([0-9][\d,]*(?:\.\d{2})?)/);
+    if (!m) return null;
+    return parseMoney(m[1] || '');
   };
   const findTotalInText = (text: string): number | null => {
     // Primary: common phrasings across divisions
@@ -641,7 +664,7 @@ CRITICAL RULES:
   // (mergeReports no longer needed)
 
   type Qual = { includes?: string[]; excludes?: string[]; allowances?: string[]; alternates?: string[]; payment_terms?: string[]; fine_print?: string[] };
-  type PerItem = { name: string; status: 'included'|'excluded'|'not_specified'; price?: number|null; notes?: string };
+  type PerItem = { name: string; status: 'included'|'excluded'|'not_specified'; price?: number|null; notes?: string; evidence?: string };
   type Unmapped = { name: string; evidence: string; confidence?: number };
   type PerContractor = { items: Array<PerItem>; qualifications?: Qual; unmapped?: Unmapped[]; total?: number | null };
   const per: Record<string, PerContractor> = {};
@@ -1100,10 +1123,15 @@ NORMALIZATION RULES:
         const nm = it.name as string | undefined;
         if (typeof nm === 'string' && nm) mappedDisplay = mapToCandidate(nm) || nearestCandidate(nm);
       }
+      let price: number | null = typeof it.price === 'number' ? it.price : null;
+      if (price == null && ev) {
+        const p = findPriceInEvidence(cleanEvidence(ev));
+        if (p != null) price = p;
+      }
       if (mappedDisplay) {
-        kept.push({ name: mappedDisplay, status: stNorm, price: typeof it.price === 'number' ? it.price : null, notes: undefined });
+        kept.push({ name: mappedDisplay, status: stNorm, price, notes: undefined, evidence: ev });
       } else if (it.name && candidateSet.has(normalizeScope(it.name))) {
-        kept.push({ name: it.name, status: stNorm, price: typeof it.price === 'number' ? it.price : null, notes: undefined });
+        kept.push({ name: it.name, status: stNorm, price, notes: undefined, evidence: ev });
       } else {
         dropped.push({ name: it.name || '', evidence: ev });
       }
@@ -1114,7 +1142,7 @@ NORMALIZATION RULES:
         const parsedAlt = parseAlt(a);
         if (!parsedAlt) continue;
         const exists = kept.some(k => normalizeScope(k.name) === normalizeScope(parsedAlt.name));
-        if (!exists) kept.push({ name: parsedAlt.name, status: 'included', price: parsedAlt.price });
+        if (!exists) kept.push({ name: parsedAlt.name, status: 'included', price: parsedAlt.price, evidence: a });
       }
       // Note: we do not overwrite the normalized items collection here; 'kept' will be merged below
     }
@@ -1129,13 +1157,14 @@ NORMALIZATION RULES:
     }
     for (const it of kept) {
       const key = normalizeScope(it.name);
-      const prev = key ? collapsedMap.get(key) : undefined;
       if (!key) continue;
+      const prev = collapsedMap.get(key);
       if (!prev || precedence[it.status] > precedence[prev.status]) {
         collapsedMap.set(key, it);
-      } else if (prev && prev.price == null && typeof it.price === 'number') {
-        // keep better price if previous had none
-        prev.price = it.price;
+      } else if (prev) {
+        // keep better price/evidence if previous had none
+        if (prev.price == null && typeof it.price === 'number') prev.price = it.price;
+        if (!prev.evidence && it.evidence) prev.evidence = it.evidence;
       }
     }
     // Build final items array from collapsed map
@@ -1226,8 +1255,11 @@ NORMALIZATION RULES:
           const key2 = normalizeScope(it2.name);
           const prev2 = key2 ? collapsedMap2.get(key2) : undefined;
           if (!key2) continue;
-          if (!prev2 || precedence2[it2.status] > precedence2[prev2.status]) collapsedMap2.set(key2, it2);
-          else if (prev2 && prev2.price == null && typeof it2.price === 'number') prev2.price = it2.price;
+          if (!prev2 || precedence2[it2.status] > precedence2[prev2.status]) collapsedMap2.set(key2, it2 as PerItem);
+          else if (prev2) {
+            if (prev2.price == null && typeof it2.price === 'number') prev2.price = it2.price as number;
+            if (!prev2.evidence && (it2 as PerItem).evidence) prev2.evidence = (it2 as PerItem).evidence;
+          }
         }
         const finalItems2: PerItem[] = Array.from(collapsedMap2.values());
         try {
@@ -1336,6 +1368,16 @@ NORMALIZATION RULES:
     const cidKey = b.contractor_id || 'unassigned';
     per[cidKey] = { items: resultItems, qualifications: mergeQual(parsed.qualifications), unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
     unmappedPer[cidKey] = [...(parsed.unmapped || []), ...dropped];
+    // Debug: summarize statuses and priced rows for this contractor
+    try {
+      const counts = resultItems.reduce((acc, it) => {
+        acc[it.status] = (acc[it.status] || 0) + 1;
+        if (typeof it.price === 'number') acc.priced += 1;
+        return acc;
+      }, { included: 0, excluded: 0, not_specified: 0, priced: 0 } as Record<string, number>);
+      console.log('[PerContractor]', contractorName, 'included', counts.included, 'excluded', counts.excluded, 'not_specified', counts.not_specified, 'priced', counts.priced);
+    } catch {}
+
     done += 1;
     await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(90, Math.round((done / batches.length) * 85) + 5) }).eq('id', job.id);
   };
@@ -1372,6 +1414,10 @@ NORMALIZATION RULES:
   const prunedScopeItems = scopeItems.filter(s => Object.values(matrix[s] || {}).some((v: { status: string }) => v.status !== 'not_specified'));
   const prunedMatrix: NonNullable<Report['matrix']> = {};
   for (const s of prunedScopeItems) prunedMatrix[s] = matrix[s];
+  try {
+    const nonNsRows = prunedScopeItems.length;
+    console.log('[Merge] scopeItems', scopeItems.length, 'rows_with_any_decision', nonNsRows);
+  } catch {}
   const quals: NonNullable<Report['qualifications']> = {};
   for (const b of bidList) {
     const cid = b.contractor_id || 'unassigned';
