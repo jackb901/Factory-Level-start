@@ -614,25 +614,13 @@ CRITICAL RULES:
       const hit = lowerLines.some(L => hints.some(h => L.includes(h.toLowerCase())) || L.includes(name));
       keep.push(hit);
     }
-    const anyTrue = keep.some(k => k);
-    const anyFalse = keep.some(k => !k);
-    // Only prune when we have at least one supported item; if everything looks unsupported,
-    // keep the original list to avoid empty scopes like the screenshot you saw.
-    if (anyTrue && anyFalse) {
+    if (keep.some(k => !k)) {
       const before = candidateUnionFinal.length;
       candidateUnionFinal = candidateUnionFinal.filter((_, i) => keep[i]);
       hintsPerRow = hintsPerRow.filter((_, i) => keep[i]);
       try { console.log('[Pass1] pruned_unsubstantiated', before - candidateUnionFinal.length); } catch {}
     }
   } catch {}
-
-  // Safety fallback: never allow an empty unified scope. If all pruning/aggregation fails,
-  // fall back to the raw candidateUnionSet (up to 40 items) so the matrix always has rows.
-  if (!candidateUnionFinal.length && candidateUnionSet.size) {
-    try { console.warn('[Pass1] candidateUnionFinal empty, falling back to candidateUnionSet'); } catch {}
-    candidateUnionFinal = Array.from(candidateUnionSet).slice(0, 40);
-    hintsPerRow = candidateUnionFinal.map(makeHints);
-  }
 
   const batches: BidRow[][] = [];
   for (let i = 0; i < bidList.length; i += LIMITS.batchSize) batches.push(bidList.slice(i, i + LIMITS.batchSize));
@@ -1381,13 +1369,7 @@ NORMALIZATION RULES:
     }
   }
   // Post-processing prune: drop rows where all contractors are not_specified
-  let prunedScopeItems = scopeItems.filter(s => Object.values(matrix[s] || {}).some((v: { status: string }) => v.status !== 'not_specified'));
-  // If everything came back as not_specified for all contractors, fall back to showing
-  // all scopeItems instead of an empty matrix so the report is still useful.
-  if (!prunedScopeItems.length) {
-    try { console.warn('[Merge] all rows not_specified; falling back to full scopeItems'); } catch {}
-    prunedScopeItems = scopeItems;
-  }
+  const prunedScopeItems = scopeItems.filter(s => Object.values(matrix[s] || {}).some((v: { status: string }) => v.status !== 'not_specified'));
   const prunedMatrix: NonNullable<Report['matrix']> = {};
   for (const s of prunedScopeItems) prunedMatrix[s] = matrix[s];
   const quals: NonNullable<Report['qualifications']> = {};
