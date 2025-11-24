@@ -220,7 +220,7 @@ export async function POST(req: NextRequest) {
   };
   const findTotalInText = (text: string): number | null => {
     // Primary: common phrasings across divisions
-    const re = /(total\s*(?:base\s*)?(?:bid|price|amount)|base\s*(?:bid|price)\s*(?:total)?|bid\s*(?:amount|price)|proposal\s*(?:total|amount|price)|contract\s*amount)\s*[:\-]?\s*\$?\s*([0-9][\d,]*(?:\.\d{2})?)/gi;
+    const re = /(total\s*(?:base\s*)?(?:bid|price|amount)|base\s*(?:bid|price)\s*(?:total)?|bid\s*(?:amount|price)|proposal\s*(?:total|amount|price)|contract\s*amount|lump\s*sum)\s*[:\-]?\s*\$?\s*([0-9][\d,]*(?:\.\d{2})?)/gi;
     let best: number | null = null;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
@@ -308,7 +308,7 @@ export async function POST(req: NextRequest) {
     const trimmed = s.trim();
     if (trimmed.length < 2) return true; // Empty or nearly empty
 
-    // const l = trimmed.toLowerCase(); // not used
+    const l = trimmed.toLowerCase();
 
     // ONLY filter obvious letterhead/header junk that appears standalone
     // Company name ONLY if it's by itself on the line
@@ -335,6 +335,18 @@ export async function POST(req: NextRequest) {
     // Website URLs (standalone only)
     if (/^(www\.|https?:\/\/)[a-z0-9.-]+\.[a-z]{2,}\s*$/i.test(trimmed)) return true;
 
+    // Contractor company names: if the line is just a contractor name (optionally with case changes),
+    // treat it as header/letterhead, not scope. We compare against known contractor names when available.
+    try {
+      const names = Object.values(contractorsMap || {}) as string[];
+      for (const n of names) {
+        if (!n) continue;
+        const ln = n.toLowerCase().trim();
+        if (!ln) continue;
+        if (l === ln || l.startsWith(ln + ' ')) return true;
+      }
+    } catch {}
+
     return false;
   };
 
@@ -345,6 +357,7 @@ export async function POST(req: NextRequest) {
     if (isJunkLine(t)) return '';
     const lower = t.toLowerCase();
     const skip = ['total', 'subtotal', 'tax', 'notes', 'note', 'bid form', 'signature', 'thank you', 'proposal', 'drawings', 'architectural drawings', 'mep drawings', 'specifications', 'schedule', 'pricing', 'valid for', 'lead times', 'receipt of order', 'warranty', 'contact', 'phone', 'email', 'address'];
+    if (/\bcid:\s*\d+/i.test(lower)) return '';
     if (skip.includes(lower)) return '';
     return t.length > 120 ? t.slice(0, 120) : t;
   };
@@ -362,7 +375,7 @@ export async function POST(req: NextRequest) {
   };
   const isNarrativeLine = (line: string) => {
     const l = normFilter(line);
-    return /(thank you|we are assuming|we assume|assum(e|ptions)|shall|will\s+provide|please|sincerely|valid\s+for\s+\d+\s+days|warranty|lead\s*times?|due to|this proposal is based)/i.test(l);
+    return /(thank you|we are assuming|we assume|assum(e|ptions)|shall|will\s+provide|please|sincerely|valid\s+for\s+\d+\s+days|warranty|lead\s*times?|due to|this proposal is based|proposes?\s+to\s+furnish|pleased\s+to\s+submit\s+this\s+proposal)/i.test(l);
   };
   // Additional boilerplate/business lines that should not become scope
   const isBoilerplateLine = (line: string) => {
