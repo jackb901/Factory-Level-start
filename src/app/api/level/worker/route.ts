@@ -1118,8 +1118,8 @@ NORMALIZATION RULES:
       }
       // Note: we do not overwrite the normalized items collection here; 'kept' will be merged below
     }
-    // Fill in any missing rows with not_specified, then collapse duplicates with precedence: included > excluded > not_specified
-    const precedence: Record<string, number> = { included: 3, excluded: 2, not_specified: 1 } as const;
+    // Fill in any missing rows with not_specified, then collapse duplicates with precedence: excluded > included > not_specified
+    const precedence: Record<string, number> = { excluded: 3, included: 2, not_specified: 1 } as const;
     const collapsedMap = new Map<string, PerItem>();
     // pre-fill all rows as not_specified
     for (let i = 0; i < candidateUnionFinal.length; i++) {
@@ -1213,8 +1213,8 @@ NORMALIZATION RULES:
           else if (it.name && candidateSet.has(normalizeScope(it.name))) kept2.push({ name: it.name, status: stNorm2, price: typeof it.price === 'number' ? it.price : null });
           else dropped2.push({ name: it.name || '', evidence: ev });
         }
-        // After retry, collapse duplicates per candidate row
-        const precedence2: Record<string, number> = { included: 3, excluded: 2, not_specified: 1 } as const;
+        // After retry, collapse duplicates per candidate row (exclusions win over inclusions)
+        const precedence2: Record<string, number> = { excluded: 3, included: 2, not_specified: 1 } as const;
         const collapsedMap2 = new Map<string, PerItem>();
         // pre-fill all rows
         for (let i = 0; i < candidateUnionFinal.length; i++) {
@@ -1294,9 +1294,9 @@ NORMALIZATION RULES:
             const L = l.toLowerCase();
             return strongHints.some(h => L.includes(h.toLowerCase()));
           });
-          // Precedence: included > excluded > not_specified
-          if (inclHit) { it.status = 'included'; byKey.set(key, it); changed++; }
-          else if (exclHit) { it.status = 'excluded'; byKey.set(key, it); changed++; }
+          // Precedence: excluded > included > not_specified (explicit exclusions win)
+          if (exclHit) { it.status = 'excluded'; byKey.set(key, it); changed++; }
+          else if (inclHit) { it.status = 'included'; byKey.set(key, it); changed++; }
         }
         if (changed > 0) {
           // Rebuild resultItems in candidate order to keep UI stable
