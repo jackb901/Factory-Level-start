@@ -614,12 +614,7 @@ CRITICAL RULES:
       const hit = lowerLines.some(L => hints.some(h => L.includes(h.toLowerCase())) || L.includes(name));
       keep.push(hit);
     }
-    const anyTrue = keep.some(k => k);
-    const anyFalse = keep.some(k => !k);
-    // Only prune when we have a mix of supported/unsupported items; if everything
-    // looks unsupported or everything is supported, keep the original list so
-    // we never prune the entire unified scope.
-    if (anyTrue && anyFalse) {
+    if (keep.some(k => !k)) {
       const before = candidateUnionFinal.length;
       candidateUnionFinal = candidateUnionFinal.filter((_, i) => keep[i]);
       hintsPerRow = hintsPerRow.filter((_, i) => keep[i]);
@@ -1374,13 +1369,7 @@ NORMALIZATION RULES:
     }
   }
   // Post-processing prune: drop rows where all contractors are not_specified
-  let prunedScopeItems = scopeItems.filter(s => Object.values(matrix[s] || {}).some((v: { status: string }) => v.status !== 'not_specified'));
-  // If everything came back as not_specified for all contractors, fall back to showing
-  // all scopeItems instead of an empty matrix so the report is still useful.
-  if (!prunedScopeItems.length) {
-    try { console.warn('[Merge] all rows not_specified; falling back to full scopeItems'); } catch {}
-    prunedScopeItems = scopeItems;
-  }
+  const prunedScopeItems = scopeItems.filter(s => Object.values(matrix[s] || {}).some((v: { status: string }) => v.status !== 'not_specified'));
   const prunedMatrix: NonNullable<Report['matrix']> = {};
   for (const s of prunedScopeItems) prunedMatrix[s] = matrix[s];
   const quals: NonNullable<Report['qualifications']> = {};
