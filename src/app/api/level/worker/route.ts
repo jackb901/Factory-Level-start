@@ -486,7 +486,7 @@ CRITICAL RULES:
       }
     }
     const aggSystem = `You are a construction estimator normalizing scope across multiple contractor bids for ${divisionName}. Produce a clean, consolidated list of short noun-phrase scope categories. Ignore boilerplate, addresses, document references, clarifications, assumptions, warranty. Consolidate specifics into general categories. Remove all number/letter prefixes. Output 20-40 items.`;
-    const aggResp = await anthropic.messages.create({ model: MODEL, max_tokens: 1200, temperature: 0, system: aggSystem, messages: [{ role: 'user', content: aggContent }] } as unknown as Parameters<typeof anthropic.messages.create>[0]);
+    const aggResp = await anthropic.messages.create({ model: MODEL, max_tokens: 1200, temperature: 0.1, system: aggSystem, messages: [{ role: 'user', content: aggContent }] } as unknown as Parameters<typeof anthropic.messages.create>[0]);
     const aggMsg = aggResp as unknown as { content?: Array<{ type: string; text?: string }> };
     const aggText = (Array.isArray(aggMsg.content) ? (aggMsg.content.find((b: unknown) => (typeof b === 'object' && b !== null && (b as { type?: string }).type === 'text')) as { type: string; text?: string } | undefined)?.text || '' : '') as string;
     const aggParsed = (() => { try { return JSON.parse(aggText) as { scope_items?: string[] }; } catch { try { return JSON.parse((aggText.match(/\{[\s\S]*\}/)?.[0] || '{}')) as { scope_items?: string[] }; } catch { return { scope_items: [] }; } } })();
@@ -999,7 +999,7 @@ NORMALIZATION RULES:
       let attempt = 0;
       while (attempt < tries) {
         try {
-          return await anthropic.messages.create({ model: MODEL, max_tokens: 2800, temperature: 0, system, messages: [{ role: 'user', content }] } as unknown as Parameters<typeof anthropic.messages.create>[0]);
+          return await anthropic.messages.create({ model: MODEL, max_tokens: 2800, temperature: 0.2, system, messages: [{ role: 'user', content }] } as unknown as Parameters<typeof anthropic.messages.create>[0]);
         } catch (e) {
           const msg = (e as Error).message || '';
           // backoff on rate limit
