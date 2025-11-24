@@ -659,7 +659,8 @@ CRITICAL RULES:
     return candidateNormToDisplay.get(norm) || null;
   };
   let done = 0;
-  for (const batch of batches) {
+
+  const processBatch = async (batch: typeof bidList[]) => {
     // batchSize=1 → single contractor per loop
     const b = batch[0];
     let content: ContentBlockParam[] = [];
@@ -1314,7 +1315,19 @@ NORMALIZATION RULES:
     unmappedPer[cidKey] = [...(parsed.unmapped || []), ...dropped];
     done += 1;
     await supabase.from('processing_jobs').update({ batches_done: done, progress: Math.min(90, Math.round((done / batches.length) * 85) + 5) }).eq('id', job.id);
-  }
+  };
+
+  const MAX_CONCURRENCY = Math.min(3, batches.length || 1);
+  let batchIndex = 0;
+  const workers = Array.from({ length: MAX_CONCURRENCY }, async () => {
+    while (true) {
+      const i = batchIndex++;
+      if (i >= batches.length) break;
+      const batch = batches[i];
+      await processBatch(batch);
+    }
+  });
+  await Promise.all(workers);
 
   // Merge pass → final division-level report
   // Use the final unified candidate scope (after Pass 1 + canonicalization)
