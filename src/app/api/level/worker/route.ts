@@ -425,7 +425,7 @@ export async function POST(req: NextRequest) {
         if (!domainKeep(first)) continue;
         if (isDocRefLine(first) || isNarrativeLine(first) || isBoilerplateLine(first)) continue;
         // If an alternate-like row appears in a table, normalize and keep only the clean title
-        const altLikeTbl = /(\b(add|deduct)\s+alternate\b|^alternate\b|\bunit\s+is\s*:|\bat\s+fc\b|\$\s*\d)/i.test(first);
+        const altLikeTbl = /(\b(add|deduct)\s+alternate\b|^alternate\b|\bunit\s+is\s*:|\bat\s+fc\b)/i.test(first);
         if (altLikeTbl) {
           const alt = normalizeAlternateTitle(first);
           if (alt) { out.push(alt); continue; }
@@ -446,7 +446,7 @@ export async function POST(req: NextRequest) {
         if (/(^|\b)(base\s*(?:bid|price)|total(?:\s*(?:price|amount))?|bid\s*amount|proposal\s*(?:total|amount))\b/i.test(candRaw)) continue;
         if (isDocRefLine(candRaw) || isNarrativeLine(candRaw) || isBoilerplateLine(candRaw)) continue;
         // Alternates anywhere: include normalized title and do not add raw
-        const altLike = section === 'alternates' || /(\b(add|deduct)\s+alternate\b|^alternate\b|\bunit\s+is\s*:|\bat\s+fc\b|\$\s*\d)/i.test(candRaw);
+        const altLike = section === 'alternates' || /(\b(add|deduct)\s+alternate\b|^alternate\b|\bunit\s+is\s*:|\bat\s+fc\b)/i.test(candRaw);
         if (altLike) {
           const alt = normalizeAlternateTitle(candRaw);
           if (alt) out.push(alt);
@@ -527,9 +527,9 @@ CRITICAL RULES:
     const aggText = (Array.isArray(aggMsg.content) ? (aggMsg.content.find((b: unknown) => (typeof b === 'object' && b !== null && (b as { type?: string }).type === 'text')) as { type: string; text?: string } | undefined)?.text || '' : '') as string;
     const aggParsed = (() => { try { return JSON.parse(aggText) as { scope_items?: string[] }; } catch { try { return JSON.parse((aggText.match(/\{[\s\S]*\}/)?.[0] || '{}')) as { scope_items?: string[] }; } catch { return { scope_items: [] }; } } })();
     let proposed = Array.isArray(aggParsed.scope_items) ? aggParsed.scope_items : [];
-    // Normalize alternates in the aggregator output only when clearly alternate-like
+    // Normalize alternates in the aggregator output only when clearly alternate-like by name
     proposed = proposed.map(s => {
-      const hasAltSignal = /\balternat(e|es|e:)|\b(add|deduct)\s+alternate\b|\$\s*\d/i.test(s);
+      const hasAltSignal = /\balternat(e|es|e:)|\b(add|deduct)\s+alternate\b/i.test(s);
       if (hasAltSignal) {
         const alt = normalizeAlternateTitle(s);
         return alt || '';
@@ -1353,6 +1353,49 @@ NORMALIZATION RULES:
           }
           resultItems = rebuilt;
           try { console.log('[fallback] applied', changed, 'rows'); } catch {}
+        }
+      }
+    } catch {}
+
+    // Second-pass price inference: if an included row has no price but we can
+    // find a matching SOV line with a dollar amount, fill the price from that.
+    try {
+      const byKeyForPrice = new Map<string, PerItem>();
+      for (const it of resultItems) byKeyForPrice.set(normalizeScope(it.name), it);
+      // Limit search space for performance
+      const allLines = (Array.isArray(collectedAllLines) ? collectedAllLines : []).slice(0, 800);
+      for (let i = 0; i < candidateUnionFinal.length; i++) {
+        const rowName = candidateUnionFinal[i];
+        const key = normalizeScope(rowName);
+        if (!key) continue;
+        const item = byKeyForPrice.get(key);
+        if (!item || item.status !== 'included' || typeof item.price === 'number') continue;
+        const hints = (hintsPerRow[i] || []) as string[];
+        if (!hints.length) continue;
+        let bestLine: string | null = null;
+        let bestScore = 0;
+        for (const lnRaw of allLines) {
+          const ln = (lnRaw || '').trim();
+          if (!ln) continue;
+          if (!/\$\s*\d/.test(ln)) continue;
+          if (isTotalsLike(ln) || isDocRefLine(ln) || isNarrativeLine(ln) || isBoilerplateLine(ln)) continue;
+          const lower = ln.toLowerCase();
+          let score = 0;
+          for (const h of hints) {
+            if (h && lower.includes(h.toLowerCase())) score++;
+          }
+          if (!score) continue;
+          if (score > bestScore) {
+            bestScore = score;
+            bestLine = ln;
+          }
+        }
+        if (bestLine && bestScore > 0) {
+          const m = bestLine.match(/\$\s*([0-9][\d,]*(?:\.\d{2})?)/);
+          if (m) {
+            const val = parseMoney(m[1] || '');
+            if (val != null) item.price = val;
+          }
         }
       }
     } catch {}
