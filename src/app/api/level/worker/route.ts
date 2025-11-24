@@ -626,6 +626,14 @@ CRITICAL RULES:
     }
   } catch {}
 
+  // Safety fallback: never allow an empty unified scope. If all pruning/aggregation fails,
+  // fall back to the raw candidateUnionSet (up to 40 items) so the matrix always has rows.
+  if (!candidateUnionFinal.length && candidateUnionSet.size) {
+    try { console.warn('[Pass1] candidateUnionFinal empty, falling back to candidateUnionSet'); } catch {}
+    candidateUnionFinal = Array.from(candidateUnionSet).slice(0, 40);
+    hintsPerRow = candidateUnionFinal.map(makeHints);
+  }
+
   const batches: BidRow[][] = [];
   for (let i = 0; i < bidList.length; i += LIMITS.batchSize) batches.push(bidList.slice(i, i + LIMITS.batchSize));
   await supabase.from('processing_jobs').update({ batches_total: batches.length }).eq('id', job.id);
