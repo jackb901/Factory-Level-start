@@ -614,7 +614,11 @@ CRITICAL RULES:
       const hit = lowerLines.some(L => hints.some(h => L.includes(h.toLowerCase())) || L.includes(name));
       keep.push(hit);
     }
-    if (keep.some(k => !k)) {
+    const anyTrue = keep.some(k => k);
+    const anyFalse = keep.some(k => !k);
+    // Only prune when we have at least one supported item; if everything looks unsupported,
+    // keep the original list to avoid empty scopes like the screenshot you saw.
+    if (anyTrue && anyFalse) {
       const before = candidateUnionFinal.length;
       candidateUnionFinal = candidateUnionFinal.filter((_, i) => keep[i]);
       hintsPerRow = hintsPerRow.filter((_, i) => keep[i]);
