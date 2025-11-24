@@ -1381,7 +1381,13 @@ NORMALIZATION RULES:
     }
   }
   // Post-processing prune: drop rows where all contractors are not_specified
-  const prunedScopeItems = scopeItems.filter(s => Object.values(matrix[s] || {}).some((v: { status: string }) => v.status !== 'not_specified'));
+  let prunedScopeItems = scopeItems.filter(s => Object.values(matrix[s] || {}).some((v: { status: string }) => v.status !== 'not_specified'));
+  // If everything came back as not_specified for all contractors, fall back to showing
+  // all scopeItems instead of an empty matrix so the report is still useful.
+  if (!prunedScopeItems.length) {
+    try { console.warn('[Merge] all rows not_specified; falling back to full scopeItems'); } catch {}
+    prunedScopeItems = scopeItems;
+  }
   const prunedMatrix: NonNullable<Report['matrix']> = {};
   for (const s of prunedScopeItems) prunedMatrix[s] = matrix[s];
   const quals: NonNullable<Report['qualifications']> = {};
