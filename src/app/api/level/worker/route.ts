@@ -1312,6 +1312,27 @@ NORMALIZATION RULES:
       }
     } catch {}
 
+    // If alternates explicitly say "GC to provide" / "by others" / "not included", treat the base scope row as excluded
+    try {
+      const altSubKeys = new Set<string>();
+      const ALT_SUB_RE = /(gc\s+to\s+provide|by\s+gc|by\s+others|others\s+to\s+provide|not\s+included)/i;
+      for (const a of explicitAlternates) {
+        if (!ALT_SUB_RE.test(a)) continue;
+        const title = normalizeAlternateTitle(a) || a;
+        const k = normalizeScope(title);
+        if (k) altSubKeys.add(k);
+      }
+      if (altSubKeys.size) {
+        resultItems = resultItems.map(it => {
+          const k = normalizeScope(it.name);
+          if (k && altSubKeys.has(k) && !/^alternate:/i.test(it.name)) {
+            return { ...it, status: 'excluded' };
+          }
+          return it;
+        });
+      }
+    } catch {}
+
     const cidKey = b.contractor_id || 'unassigned';
     per[cidKey] = { items: resultItems, qualifications: mergeQual(parsed.qualifications), unmapped: parsed.unmapped, total: (typeof parsed.total === 'number' ? parsed.total : detectedTotal) ?? null };
     unmappedPer[cidKey] = [...(parsed.unmapped || []), ...dropped];
